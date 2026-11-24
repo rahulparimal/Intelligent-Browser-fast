@@ -13,6 +13,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
+use crate::acl::{self, Access};
 use crate::extract::{ExtractError, extract};
 use crate::paths::default_db_path;
 use crate::settings::{Settings, SettingsError, SettingsStore};
@@ -176,6 +177,7 @@ impl LiteStore {
             "CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY, path TEXT UNIQUE, title TEXT, sha TEXT, bytes INTEGER DEFAULT 0, indexed_at INTEGER DEFAULT 0);
              CREATE TABLE IF NOT EXISTS folders(path TEXT PRIMARY KEY, added_at INTEGER);
              CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+             CREATE TABLE IF NOT EXISTS doc_acl(path TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY(path, principal));
              CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(text, title, alt, doc_id UNINDEXED, page UNINDEXED, tokenize='porter unicode61 remove_diacritics 2');",
         )?;
         for col in ["bytes", "indexed_at"] {
@@ -414,6 +416,97 @@ impl LiteStore {
         })
     }
 
+    // ---- access lists ---------------------------------------------------------------------------------------------
+    /// Restrict a document to the given principals, replacing any earlier list. An empty list hides it from everyone.
+    pub fn set_acl(&self, path: &str, principals: &[&str]) -> Result<(), SearchError> {
+        let mut db = self.conn();
+        let tx = db.transaction()?;
+        tx.execute("DELETE FROM doc_acl WHERE path=?1", [path])?;
+        for p in principals.iter().filter(|p| !p.is_empty() && !p.contains('\0')) {
+            tx.execute("INSERT OR IGNORE INTO doc_acl(path, principal) VALUES(?1, ?2)", params![path, p])?;
+        }
+        if !tx.query_row("SELECT EXISTS(SELECT 1 FROM doc_acl WHERE path=?1)", [path], |r| r.get::<_, bool>(0))? {
+            tx.execute("INSERT INTO doc_acl(path, principal) VALUES(?1, ?2)", params![path, acl::NOBODY])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove a document's access list (it then follows the policy for unlisted documents).
+    pub fn clear_acl(&self, path: &str) -> Result<(), SearchError> {
+        self.conn().execute("DELETE FROM doc_acl WHERE path=?1", [path])?;
+        Ok(())
+    }
+
+    /// Every restricted document with its principals (administrative; not filtered).
+    pub fn acl_entries(&self) -> Result<Vec<(String, Vec<String>)>, SearchError> {
+        let db = self.conn();
+        let mut st = db.prepare("SELECT path, principal FROM doc_acl ORDER BY path, principal")?;
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        for r in st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (path, principal) = r?;
+            let principal = if principal == acl::NOBODY { String::new() } else { principal };
+            match out.last_mut() {
+                Some((p, v)) if *p == path => {
+                    if !principal.is_empty() {
+                        v.push(principal);
+                    }
+                }
+                _ => out.push((path, if principal.is_empty() { Vec::new() } else { vec![principal] })),
+            }
+        }
+        Ok(out)
+    }
+
+    /// [`documents`](Self::documents) limited to what `access` may see. `documents` itself is administrative and unfiltered.
+    pub fn documents_as(
+        &self,
+        query: &str,
+        offset: usize,
+        limit: usize,
+        access: &Access,
+    ) -> Result<(Vec<DocInfo>, i64), SearchError> {
+        let like = format!("%{}%", query.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+        let principals = access.clean();
+        let vis = acl::visible_sql(access.policy, 4, principals.len());
+        let filter = format!("(lower(d.path) LIKE ?1 ESCAPE '\\' OR lower(d.title) LIKE ?1 ESCAPE '\\') AND {vis}");
+        let db = self.conn();
+        let mut args: Vec<rusqlite::types::Value> = vec![like.clone().into()];
+        args.extend(principals.iter().map(|p| rusqlite::types::Value::from(p.clone())));
+        // the count query has no limit/offset, so its principals start at ?2: rebuild the predicate for it
+        let count_filter = format!(
+            "(lower(d.path) LIKE ?1 ESCAPE '\\' OR lower(d.title) LIKE ?1 ESCAPE '\\') AND {}",
+            acl::visible_sql(access.policy, 2, principals.len())
+        );
+        let total: i64 = db.query_row(
+            &format!("SELECT COUNT(*) FROM docs d WHERE {count_filter}"),
+            rusqlite::params_from_iter(args),
+            |r| r.get(0),
+        )?;
+        let mut st = db.prepare(&format!(
+            "SELECT d.id, d.path, d.title, (SELECT COUNT(*) FROM chunks c WHERE c.doc_id=d.id), d.bytes, d.indexed_at FROM docs d \
+             WHERE {filter} ORDER BY d.path LIMIT ?2 OFFSET ?3"
+        ))?;
+        let mut args: Vec<rusqlite::types::Value> =
+            vec![like.into(), (limit.clamp(1, 200) as i64).into(), (offset as i64).into()];
+        args.extend(principals.iter().map(|p| rusqlite::types::Value::from(p.clone())));
+        let rows = st
+            .query_map(rusqlite::params_from_iter(args), |r| {
+                let path: String = r.get(1)?;
+                Ok(DocInfo {
+                    id: r.get(0)?,
+                    exists: Path::new(&path).exists(),
+                    path,
+                    title: r.get(2)?,
+                    chunks: r.get(3)?,
+                    bytes: r.get(4)?,
+                    indexed_at: r.get(5)?,
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok((rows, total))
+    }
+
     /// Documents whose path or title contains `query` (case-insensitive; `%` and `_` are literal).
     pub fn documents(&self, query: &str, offset: usize, limit: usize) -> Result<(Vec<DocInfo>, i64), SearchError> {
         let like = format!("%{}%", query.to_lowercase().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
@@ -447,6 +540,18 @@ impl LiteStore {
     /// Best passages for `query`. AND first (precision), then OR (recall). Terms are quoted, so user text can never inject
     /// FTS syntax. `group` shows each document once (its best passage); `None` uses the setting.
     pub fn search(&self, query: &str, limit: Option<usize>, group: Option<bool>) -> Result<Vec<Hit>, SearchError> {
+        self.search_as(query, limit, group, &Access::anonymous())
+    }
+
+    /// Like [`search`](Self::search) for a caller holding `access`: documents the caller may not see are excluded inside the
+    /// query, before ranking and before the limit is applied.
+    pub fn search_as(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+        group: Option<bool>,
+        access: &Access,
+    ) -> Result<Vec<Hit>, SearchError> {
         let cfg = self.settings();
         let limit = limit.filter(|l| *l > 0).unwrap_or(usize::try_from(cfg.result_limit).unwrap_or(10)).clamp(1, 50);
         let group = group.unwrap_or(cfg.group_by_document);
@@ -454,19 +559,23 @@ impl LiteStore {
         if terms.is_empty() {
             return Ok(Vec::new());
         }
+        let principals = access.clean();
         let fetch = if group { limit * 6 } else { limit };
         let sql = format!(
             "SELECT d.id, d.title, d.path, c.page, snippet(chunks, 0, '<mark>', '</mark>', ' ... ', {}), bm25(chunks, 1.0, 2.0, 1.0) AS s \
-             FROM chunks c JOIN docs d ON d.id = c.doc_id WHERE chunks MATCH ?1 ORDER BY s LIMIT ?2",
-            cfg.snippet_words
+             FROM chunks c JOIN docs d ON d.id = c.doc_id WHERE chunks MATCH ?1 AND {} ORDER BY s LIMIT ?2",
+            cfg.snippet_words,
+            acl::visible_sql(access.policy, 3, principals.len())
         );
         let mut rows: Vec<(i64, String, String, i64, String, f64)> = Vec::new();
         for joiner in [" AND ", " OR "] {
             let m = terms.iter().map(|t| format!("\"{}\"", t.replace('"', ""))).collect::<Vec<_>>().join(joiner);
+            let mut args: Vec<rusqlite::types::Value> = vec![m.into(), (fetch as i64).into()];
+            args.extend(principals.iter().map(|p| rusqlite::types::Value::from(p.clone())));
             let db = self.conn();
             let mut st = db.prepare_cached(&sql)?;
             rows = st
-                .query_map(params![m, fetch as i64], |r| {
+                .query_map(rusqlite::params_from_iter(args), |r| {
                     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
                 })?
                 .collect::<Result<_, _>>()?;

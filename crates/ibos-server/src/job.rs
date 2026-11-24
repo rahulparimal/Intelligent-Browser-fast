@@ -112,6 +112,8 @@ mod tests {
         let store = Arc::new(LiteStore::open(Some(&dir.path().join("i.db")), None).unwrap());
         let app = Arc::new(App {
             store,
+            access: ibos_search::acl::Access::anonymous(),
+            token: "test-token".into(),
             job: Job::default(),
             port: AtomicU64::new(0),
             last_ping: AtomicU64::new(0),

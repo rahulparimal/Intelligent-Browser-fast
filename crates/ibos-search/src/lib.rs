@@ -6,6 +6,7 @@
 //! * [`text`] - chunking, stopwords and joined-word forms (`e-mail` also matches `email`).
 //! * [`settings`] - validated, atomically written settings with secrets that never leave the process.
 
+pub mod acl;
 pub mod extract;
 pub mod paths;
 pub mod settings;

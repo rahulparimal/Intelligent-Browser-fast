@@ -23,6 +23,8 @@ enum Command {
     Admin(commands::UiArgs),
     /// Add files or folders to the search index (txt, md, html, pdf, docx)
     Index(commands::IndexArgs),
+    /// Restrict documents to certain users or groups (list, set, clear)
+    Acl(commands::AclArgs),
     /// Search your documents from the terminal
     Search(commands::SearchArgs),
     /// Score search quality on a file of judged queries (keyword, fuzzy, dense, hybrid)
@@ -56,6 +58,7 @@ fn main() -> ExitCode {
             Command::Ui(a) => commands::ui(a, "/").await,
             Command::Admin(a) => commands::ui(a, "/admin").await,
             Command::Index(a) => commands::index(&a),
+            Command::Acl(a) => commands::acl(&a),
             Command::Search(a) => commands::search(&a),
             Command::Eval(a) => commands::eval(&a),
             Command::Run(a) => browse::run(a).await,

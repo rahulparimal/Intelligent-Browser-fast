@@ -23,6 +23,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 webbrowser = "1"
+getrandom = "0.3"
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["json"] }

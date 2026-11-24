@@ -14,11 +14,42 @@ pub enum Policy {
     Closed,
 }
 
-pub(crate) const SCHEMA: &str =
+/// Who is asking. `Access::anonymous()` holds no principals: it sees only documents that have no access list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Access {
+    pub principals: Vec<String>,
+    pub policy: Policy,
+}
+
+impl Access {
+    pub fn anonymous() -> Self {
+        Self::default()
+    }
+
+    pub fn new<I: IntoIterator<Item = S>, S: Into<String>>(principals: I) -> Self {
+        Self { principals: principals.into_iter().map(Into::into).collect(), policy: Policy::Open }
+    }
+
+    #[must_use]
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Principals with NUL removed: NUL is reserved for the "nobody" marker, so a caller cannot present it.
+    pub(crate) fn clean(&self) -> Vec<String> {
+        self.principals.iter().filter(|p| !p.contains('\0')).cloned().collect()
+    }
+}
+
+pub const SCHEMA: &str =
     "CREATE TABLE IF NOT EXISTS doc_acl(path TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY(path, principal));";
 
+/// Principal stored for an empty list, so the document stays hidden under the `Open` policy too.
+pub(crate) const NOBODY: &str = "\u{0}nobody";
+
 /// SQL predicate over a `docs` row aliased `d`, binding principals as `?{first}`..`?{first+n-1}`.
-pub(crate) fn visible_sql(policy: Policy, first: usize, n: usize) -> String {
+pub fn visible_sql(policy: Policy, first: usize, n: usize) -> String {
     let marks = (first..first + n).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
     let granted = format!("EXISTS (SELECT 1 FROM doc_acl a WHERE a.path = d.path AND a.principal IN ({marks}))");
     match policy {

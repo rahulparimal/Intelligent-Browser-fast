@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use ibos_search::LiteStore;
+use ibos_search::acl::Access;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
@@ -41,6 +42,9 @@ pub struct ServeOptions {
     pub exit_when_closed: bool,
     /// Page to open: `/` (search) or `/admin`.
     pub path: String,
+    /// Who the page acts as. Documents with an access list are shown only if one of these principals is on it; with none, the
+    /// page sees only documents that have no access list. The AI-answer route can only quote what the page can see.
+    pub principals: Vec<String>,
     /// Timings, overridable in tests.
     pub idle_after_close: Duration,
     pub never_opened: Duration,
@@ -53,6 +57,7 @@ impl Default for ServeOptions {
             open_browser: true,
             exit_when_closed: false,
             path: "/".into(),
+            principals: Vec::new(),
             idle_after_close: IDLE_AFTER_CLOSE,
             never_opened: NEVER_OPENED,
         }
@@ -61,6 +66,10 @@ impl Default for ServeOptions {
 
 pub(crate) struct App {
     pub(crate) store: Arc<LiteStore>,
+    pub(crate) access: Access,
+    /// Random secret for this launch. Every request must carry it (cookie or `X-Intelli-Token`), so another program or user
+    /// on this machine cannot read the index or change settings just by connecting to the port.
+    pub(crate) token: String,
     pub(crate) job: job::Job,
     pub(crate) port: AtomicU64,
     /// Milliseconds since `started` of the last page heartbeat; `0` = never.
@@ -72,13 +81,25 @@ pub(crate) struct App {
 #[derive(Debug)]
 pub struct Running {
     pub addr: SocketAddr,
+    token: String,
     shutdown: watch::Sender<bool>,
     task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
 }
 
 impl Running {
+    /// Base address, without the token.
     pub fn url(&self) -> String {
         format!("http://localhost:{}", self.addr.port())
+    }
+
+    /// The launch token. Treat it like a password: anyone holding it can use the page.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// The address to open in a browser: the first visit with the token sets a cookie and redirects to the clean address.
+    pub fn open_url(&self, path: &str) -> String {
+        format!("{}{path}?t={}", self.url(), self.token)
     }
 
     /// Stop accepting connections and wait for in-flight requests.
@@ -99,6 +120,8 @@ pub async fn start(store: Arc<LiteStore>, opts: &ServeOptions) -> Result<Running
     let addr = listener.local_addr()?;
     let app = Arc::new(App {
         store,
+        access: Access::new(opts.principals.iter().cloned()),
+        token: new_token(),
         job: job::Job::default(),
         port: AtomicU64::new(u64::from(addr.port())),
         last_ping: AtomicU64::new(0),
@@ -119,14 +142,25 @@ pub async fn start(store: Arc<LiteStore>, opts: &ServeOptions) -> Result<Running
             })
             .await
     });
-    let running = Running { addr, shutdown: tx, task };
+    let running = Running { addr, token: app.token.clone(), shutdown: tx, task };
     if opts.open_browser {
-        let url = format!("{}{}", running.url(), opts.path);
+        let url = running.open_url(&opts.path);
         if let Err(e) = webbrowser::open(&url) {
             tracing::warn!(error = %e, "could not open a browser; open {url} yourself");
         }
     }
     Ok(running)
+}
+
+fn new_token() -> String {
+    let mut b = [0_u8; 24];
+    // no system randomness: refuse to run rather than fall back to a guessable token
+    getrandom::fill(&mut b).expect("the operating system could not provide random bytes");
+    b.iter().fold(String::with_capacity(48), |mut s, x| {
+        use std::fmt::Write as _;
+        let _ = write!(s, "{x:02x}");
+        s
+    })
 }
 
 async fn watch_idle(app: Arc<App>, stop: watch::Sender<bool>, idle: Duration, never: Duration) {

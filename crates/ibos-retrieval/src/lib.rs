@@ -13,7 +13,6 @@
 //! Semantic quality is decided by the [`Embedder`]. The built-in [`HashingEmbedder`] needs no model and finds typos and word
 //! forms, not synonyms. Use [`RemoteEmbedder`] for meaning.
 
-mod acl;
 mod dedupe;
 pub mod embed;
 pub mod eval;
@@ -33,8 +32,8 @@ use ibos_search::text::query_terms;
 use rusqlite::{Connection, params, params_from_iter};
 use serde::Serialize;
 
-pub use acl::Policy;
 pub use embed::{EmbedError, Embedder, HashingEmbedder, RemoteEmbedder};
+pub use ibos_search::acl::Policy;
 pub use pack::Evidence;
 pub use rerank::{HeuristicReranker, Reranker};
 
@@ -228,7 +227,7 @@ impl Retriever {
              CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
              CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vocab USING fts5vocab(chunks, 'row');
              {}",
-            acl::SCHEMA
+            ibos_search::acl::SCHEMA
         ))?;
         Ok(Self {
             db: Mutex::new(conn),
@@ -285,7 +284,10 @@ impl Retriever {
     }
 
     fn hidden_docs(&self, db: &Connection, principals: &[String]) -> Result<HashSet<i64>, RetrievalError> {
-        let sql = format!("SELECT d.id FROM docs d WHERE NOT {}", acl::visible_sql(self.policy, 1, principals.len()));
+        let sql = format!(
+            "SELECT d.id FROM docs d WHERE NOT {}",
+            ibos_search::acl::visible_sql(self.policy, 1, principals.len())
+        );
         let mut st = db.prepare(&sql)?;
         let ids = st
             .query_map(params_from_iter(principals.iter()), |r| r.get::<_, i64>(0))?
@@ -439,7 +441,7 @@ impl Retriever {
         if terms.is_empty() {
             return Ok(Vec::new());
         }
-        let vis = acl::visible_sql(self.policy, 3, q.principals.len());
+        let vis = ibos_search::acl::visible_sql(self.policy, 3, q.principals.len());
         let sql = format!(
             "SELECT c.rowid FROM chunks c JOIN docs d ON d.id = c.doc_id WHERE chunks MATCH ?1 AND {vis} ORDER BY bm25(chunks, 1.0, 2.0, 1.0) LIMIT ?2"
         );

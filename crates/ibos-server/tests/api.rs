@@ -52,7 +52,14 @@ async fn fixture() -> Fixture {
         .await
         .unwrap();
     let base = server.url();
-    Fixture { dir, docs, store, server, http: reqwest::Client::new(), base }
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("x-intelli-token", server.token().parse().unwrap());
+    let http = reqwest::Client::builder()
+        .default_headers(headers)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    Fixture { dir, docs, store, server, http, base }
 }
 
 impl Fixture {
@@ -404,16 +411,22 @@ async fn server_exits_after_the_tab_closes_and_gives_up_if_never_opened() {
     };
     let s = start(Arc::clone(&store), &opts).await.unwrap();
     let base = s.url();
+    let with_token = |t: &str| {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("x-intelli-token", t.parse().unwrap());
+        reqwest::Client::builder().default_headers(h).build().unwrap()
+    };
+    let client = with_token(s.token());
     for _ in 0..3 {
-        reqwest::get(format!("{base}/api/ping")).await.unwrap();
+        client.get(format!("{base}/api/ping")).send().await.unwrap();
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    assert!(reqwest::get(format!("{base}/health")).await.is_ok(), "alive while the page keeps pinging");
+    assert!(client.get(format!("{base}/health")).send().await.is_ok(), "alive while the page keeps pinging");
     tokio::time::timeout(Duration::from_secs(5), s.wait())
         .await
         .expect("the server stops by itself after pings stop")
         .unwrap();
-    assert!(reqwest::get(format!("{base}/health")).await.is_err());
+    assert!(client.get(format!("{base}/health")).send().await.is_err());
 
     let opts = ServeOptions {
         port: 0,
@@ -441,7 +454,11 @@ async fn auto_reindex_on_start_picks_up_registered_folders() {
         .await
         .unwrap();
     let base = again.url();
-    let http = reqwest::Client::new();
+    let http = {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert("x-intelli-token", again.token().parse().unwrap());
+        reqwest::Client::builder().default_headers(h).build().unwrap()
+    };
     for _ in 0..200 {
         let st: Value = http.get(format!("{base}/api/admin/state")).send().await.unwrap().json().await.unwrap();
         if st["job"]["running"] == json!(false) && st["job"]["id"] == json!(1) {
@@ -463,4 +480,91 @@ fn ui_assets_match_the_python_implementation_when_present() {
             .unwrap();
         assert_eq!(ours, theirs, "{page} drifted from the Python copy; both backends must serve the same UI");
     }
+}
+
+// ------------------------------------------------------------------------- access lists
+
+#[tokio::test]
+async fn restricted_documents_reach_neither_the_page_nor_the_model() {
+    let f = fixture().await;
+    let leave = f.docs.join("leave-policy.md").to_string_lossy().to_string();
+    f.store.set_acl(&leave, &["hr"]).unwrap();
+
+    // the page, acting as nobody in particular
+    let (_, out) = f.get("/api/search?q=paid+annual+leave+days").await;
+    let titles: Vec<&str> = out["results"].as_array().unwrap().iter().filter_map(|r| r["title"].as_str()).collect();
+    assert!(!titles.contains(&"leave-policy"), "search leaked a restricted document: {titles:?}");
+    let (_, docs) = f.get("/api/admin/docs?q=leave").await;
+    assert!(docs["docs"].as_array().unwrap().iter().all(|d| !d["path"].as_str().unwrap().contains("leave-policy")));
+
+    // the AI answer: the restricted text must never be sent to the model
+    let (llm, url) = fake_llm("I could not find this in the indexed documents.").await;
+    configure(&f, &url, "good").await;
+    f.post("/api/answer", &json!({"q": "how many days of paid annual leave do employees get"})).await;
+    if let Some((_, body)) = llm.last.lock().unwrap().clone() {
+        let sent = body.to_string();
+        assert!(
+            !sent.contains("25 days of paid annual leave") && !sent.contains("carried over"),
+            "restricted text was sent: {sent}"
+        );
+    }
+
+    // the same store acting as the group that may see it
+    let hr = start(
+        Arc::clone(&f.store),
+        &ServeOptions { port: 0, open_browser: false, principals: vec!["hr".into()], ..ServeOptions::default() },
+    )
+    .await
+    .unwrap();
+    let r: Value = f
+        .http
+        .get(format!("{}/api/search?q=paid+annual+leave+days", hr.url()))
+        .header("x-intelli-token", hr.token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(r["results"][0]["title"], "leave-policy", "{r}");
+    hr.shutdown().await;
+    f.server.shutdown().await;
+}
+
+// ------------------------------------------------------------------------- launch token
+
+#[tokio::test]
+async fn nothing_works_without_the_launch_token() {
+    let f = fixture().await;
+    let bare = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+    for path in ["/", "/admin", "/health", "/api/search?q=leave", "/api/admin/state", "/api/admin/docs", "/api/ping"] {
+        let r = bare.get(format!("{}{path}", f.base)).send().await.unwrap();
+        assert_eq!(r.status(), 403, "{path} answered without a token");
+    }
+    let r = bare
+        .post(format!("{}/api/index", f.base))
+        .header("X-Intelli", "1")
+        .json(&json!({"path": "/"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403, "a POST with the CSRF header but no token is refused");
+    let wrong =
+        bare.get(format!("{}/api/admin/state", f.base)).header("x-intelli-token", "0".repeat(48)).send().await.unwrap();
+    assert_eq!(wrong.status(), 403);
+    let wrong_url = bare.get(format!("{}/?t={}", f.base, "0".repeat(48))).send().await.unwrap();
+    assert_eq!(wrong_url.status(), 403, "a wrong token in the URL does not set a cookie");
+
+    // the link that is opened in the browser: sets a cookie, redirects to the clean address, and the cookie then works
+    let r = bare.get(f.server.open_url("/admin")).send().await.unwrap();
+    assert_eq!(r.status(), 303);
+    assert_eq!(r.headers()["location"], "/admin");
+    let cookie = r.headers()["set-cookie"].to_str().unwrap().to_owned();
+    assert!(cookie.contains("HttpOnly") && cookie.contains("SameSite=Strict"), "{cookie}");
+    let pair = cookie.split(';').next().unwrap();
+    let ok = bare.get(format!("{}/admin", f.base)).header("cookie", pair).send().await.unwrap();
+    assert_eq!(ok.status(), 200);
+    let state = bare.get(format!("{}/api/admin/state", f.base)).header("cookie", pair).send().await.unwrap();
+    assert_eq!(state.status(), 200);
+    f.server.shutdown().await;
 }

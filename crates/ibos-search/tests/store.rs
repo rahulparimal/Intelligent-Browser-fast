@@ -258,3 +258,69 @@ fn old_schema_is_migrated_not_crashed() {
     assert_eq!(s.stats().unwrap().documents, 1);
     assert!(s.search("anything", None, None).unwrap().is_empty());
 }
+
+#[test]
+fn access_lists_filter_search_before_the_limit_and_documents_listing() {
+    use ibos_search::acl::{Access, Policy};
+    let dir = tempfile::tempdir().unwrap();
+    let docs = dir.path().join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    for i in 0..8 {
+        std::fs::write(
+            docs.join(format!("pay{i}.txt")),
+            format!("Payroll note {i}\n\nThe payroll schedule for team {i} is monthly."),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        docs.join("open.txt"),
+        "Holiday note\n\nThe payroll schedule is posted on the intranet once a year.",
+    )
+    .unwrap();
+    let store = LiteStore::open(Some(&dir.path().join("i.db")), None).unwrap();
+    store.index_path(&docs, IndexOptions::default(), None).unwrap();
+    for i in 0..8 {
+        store.set_acl(&docs.join(format!("pay{i}.txt")).to_string_lossy(), &["finance"]).unwrap();
+    }
+    let titles = |hits: Vec<ibos_search::Hit>| {
+        hits.into_iter().map(|h| h.path.rsplit('/').next().unwrap().to_string()).collect::<Vec<_>>()
+    };
+    // limit 1: the restricted documents rank first but must not use up the single slot
+    let anon = titles(store.search_as("payroll schedule", Some(1), Some(true), &Access::anonymous()).unwrap());
+    assert_eq!(anon, ["open.txt"]);
+    assert_eq!(
+        titles(store.search("payroll schedule", Some(20), Some(true)).unwrap()),
+        ["open.txt"],
+        "plain search is anonymous"
+    );
+    let fin = store.search_as("payroll schedule", Some(20), Some(true), &Access::new(["finance"])).unwrap();
+    assert_eq!(fin.len(), 9);
+    let other = store.search_as("payroll schedule", Some(20), Some(true), &Access::new(["sales"])).unwrap();
+    assert_eq!(other.len(), 1);
+    // documents listing
+    assert_eq!(store.documents_as("", 0, 50, &Access::anonymous()).unwrap().1, 1);
+    assert_eq!(store.documents_as("", 0, 50, &Access::new(["finance"])).unwrap().1, 9);
+    assert_eq!(store.documents("", 0, 50).unwrap().1, 9, "the administrative listing is unfiltered");
+    // closed policy hides unlisted documents; an empty list hides from everyone; clearing restores
+    assert!(
+        store
+            .search_as("payroll", Some(20), Some(true), &Access::anonymous().with_policy(Policy::Closed))
+            .unwrap()
+            .is_empty()
+    );
+    let open = docs.join("open.txt").to_string_lossy().to_string();
+    store.set_acl(&open, &[]).unwrap();
+    assert!(
+        store
+            .search_as("payroll holiday intranet", Some(20), Some(true), &Access::new(["finance", "sales"]))
+            .unwrap()
+            .iter()
+            .all(|h| !h.path.ends_with("open.txt"))
+    );
+    store.clear_acl(&open).unwrap();
+    assert_eq!(
+        titles(store.search_as("holiday intranet", Some(5), Some(true), &Access::anonymous()).unwrap()),
+        ["open.txt"]
+    );
+    assert_eq!(store.acl_entries().unwrap().len(), 8);
+}

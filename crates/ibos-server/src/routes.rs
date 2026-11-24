@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::extract::{Query, Request, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_SECURITY_POLICY, HOST, X_CONTENT_TYPE_OPTIONS};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_SECURITY_POLICY, COOKIE, HOST, LOCATION, SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
+};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
@@ -86,6 +88,15 @@ async fn guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Respons
     let is_post = req.method() == Method::POST;
     let mut resp = if !host_ok {
         ApiError::new(StatusCode::FORBIDDEN, if is_post { "forbidden" } else { "bad host" }).into_response()
+    } else if let Some(redirect) = token_in_url(&app, &req) {
+        // first visit with the launch token: remember it in a cookie and go to the clean address
+        redirect
+    } else if !has_token(&app, &req) {
+        ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden: open the link that intelli-rust printed, which includes the launch token",
+        )
+        .into_response()
     } else if is_post && req.headers().get("x-intelli").and_then(|v| v.to_str().ok()) != Some("1") {
         ApiError::new(StatusCode::FORBIDDEN, "forbidden").into_response()
     } else {
@@ -96,6 +107,49 @@ async fn guard(State(app): State<Arc<App>>, req: Request, next: Next) -> Respons
     h.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert(CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
     resp
+}
+
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0_u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn cookie_name(app: &App) -> String {
+    format!("ibos_token_{}", app.port.load(Ordering::Relaxed))
+}
+
+/// Does the request carry this launch's token, in the `X-Intelli-Token` header or the cookie set on the first visit?
+fn has_token(app: &App, req: &Request) -> bool {
+    if req.headers().get("x-intelli-token").and_then(|v| v.to_str().ok()).is_some_and(|t| same(t, &app.token)) {
+        return true;
+    }
+    let name = cookie_name(app);
+    req.headers()
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|kv| kv.trim().split_once('='))
+        .any(|(k, v)| k == name && same(v, &app.token))
+}
+
+/// `GET /path?t=TOKEN`: a redirect to `/path` that sets the cookie. Anything else (including a wrong token): `None`.
+fn token_in_url(app: &App, req: &Request) -> Option<Response> {
+    if req.method() != Method::GET {
+        return None;
+    }
+    let query = req.uri().query()?;
+    let given = query.split('&').find_map(|kv| kv.strip_prefix("t="))?;
+    if !same(given, &app.token) {
+        return None;
+    }
+    let rest: Vec<&str> = query.split('&').filter(|kv| !kv.starts_with("t=")).collect();
+    let target =
+        if rest.is_empty() { req.uri().path().to_owned() } else { format!("{}?{}", req.uri().path(), rest.join("&")) };
+    let cookie = format!("{}={}; HttpOnly; SameSite=Strict; Path=/", cookie_name(app), app.token);
+    let mut resp = StatusCode::SEE_OTHER.into_response();
+    resp.headers_mut().insert(LOCATION, HeaderValue::from_str(&target).ok()?);
+    resp.headers_mut().insert(SET_COOKIE, HeaderValue::from_str(&cookie).ok()?);
+    Some(resp)
 }
 
 /// Run store work off the async runtime.
@@ -170,7 +224,7 @@ async fn search(State(app): State<Arc<App>>, Query(p): Query<SearchParams>) -> A
     let q: String = p.q.unwrap_or_default().chars().take(500).collect();
     let limit = p.limit.and_then(|l| l.parse::<usize>().ok());
     let (a, q2) = (Arc::clone(&app), q.clone());
-    let hits = blocking(move || a.store.search(&q2, limit, None)).await??;
+    let hits = blocking(move || a.store.search_as(&q2, limit, None, &a.access)).await??;
     let results: Vec<Value> = hits.into_iter().map(|h| json!({"title": h.title, "path": h.path, "page": h.page, "snippet": safe_snippet(&h.snippet), "score": h.score, "doc_id": h.doc_id})).collect();
     Ok(Json(json!({"query": q, "results": results})))
 }
@@ -192,7 +246,7 @@ async fn admin_docs(State(app): State<Arc<App>>, Query(p): Query<DocsParams>) ->
     };
     let (offset, limit) = (num(p.offset, 0)?, num(p.limit, 50)?);
     let q: String = p.q.unwrap_or_default().chars().take(200).collect();
-    let (docs, total) = blocking(move || app.store.documents(&q, offset, limit)).await??;
+    let (docs, total) = blocking(move || app.store.documents_as(&q, offset, limit, &app.access)).await??;
     Ok(Json(json!({"total": total, "docs": docs})))
 }
 
@@ -232,7 +286,7 @@ async fn answer_route(State(app): State<Arc<App>>, bytes: Bytes) -> Api {
     let cfg = app.store.settings();
     let n = usize::try_from(cfg.answer_passages).unwrap_or(5);
     let (a, q2) = (Arc::clone(&app), q.clone());
-    let hits = blocking(move || a.store.search(&q2, Some(n), Some(true))).await??;
+    let hits = blocking(move || a.store.search_as(&q2, Some(n), Some(true), &a.access)).await??;
     match answer::ask(&cfg, &q, &hits).await {
         Ok(a) => Ok(Json(json!({"text": a.text, "sources": a.sources, "warnings": a.warnings}))),
         Err(e) => Err(ApiError::new(StatusCode::BAD_GATEWAY, e)),

@@ -21,6 +21,25 @@ pub(crate) struct UiArgs {
     /// Quit shortly after the browser tab is closed
     #[arg(long)]
     exit_when_closed: bool,
+    /// Show documents restricted to this user or group (repeatable). Without it the page sees only unrestricted documents.
+    #[arg(long = "as")]
+    principals: Vec<String>,
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum AclCommand {
+    /// List restricted documents and who may see them
+    List,
+    /// Restrict a document to the given users or groups (none = hidden from everyone)
+    Set { path: PathBuf, principals: Vec<String> },
+    /// Remove a document's restriction
+    Clear { path: PathBuf },
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct AclArgs {
+    #[command(subcommand)]
+    command: AclCommand,
 }
 
 #[derive(Debug, Args)]
@@ -90,11 +109,15 @@ pub(crate) async fn ui(a: UiArgs, path: &str) -> Result<ExitCode> {
         open_browser: !a.no_open,
         exit_when_closed: a.exit_when_closed,
         path: path.to_owned(),
+        principals: a.principals.clone(),
         ..ServeOptions::default()
     };
     let running = ibos_server::start(Arc::clone(&store), &opts).await?;
     let docs = store.stats()?.documents;
-    eprintln!("Search home page: {}{path}  ({docs} documents indexed; Ctrl+C to stop)", running.url());
+    eprintln!(
+        "Search home page: {}  ({docs} documents indexed; Ctrl+C to stop)\nThe link contains a one-time launch token: keep it private.",
+        running.open_url(path)
+    );
     tokio::select! {
         r = running.wait() => r?,
         _ = tokio::signal::ctrl_c() => {}
@@ -192,7 +215,8 @@ pub(crate) fn search(a: &SearchArgs) -> Result<ExitCode> {
 }
 
 fn search_keyword_only(a: &SearchArgs) -> Result<ExitCode> {
-    let hits = open_store()?.search(&a.query, Some(a.limit), None)?;
+    let access = ibos_search::acl::Access::new(a.principals.iter().cloned());
+    let hits = open_store()?.search_as(&a.query, Some(a.limit), None, &access)?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&hits)?);
     } else if hits.is_empty() {
@@ -208,6 +232,37 @@ fn search_keyword_only(a: &SearchArgs) -> Result<ExitCode> {
                 h.score,
                 text.split_whitespace().collect::<Vec<_>>().join(" ")
             );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) fn acl(a: &AclArgs) -> Result<ExitCode> {
+    let store = open_store()?;
+    match &a.command {
+        AclCommand::List => {
+            let entries = store.acl_entries()?;
+            if entries.is_empty() {
+                println!("No restricted documents: every document is visible to everyone.");
+            }
+            for (path, who) in entries {
+                println!("{path}  ->  {}", if who.is_empty() { "nobody".to_owned() } else { who.join(", ") });
+            }
+        }
+        AclCommand::Set { path, principals } => {
+            let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            let who: Vec<&str> = principals.iter().map(String::as_str).collect();
+            store.set_acl(&abs.to_string_lossy(), &who)?;
+            println!(
+                "{} is now visible to: {}",
+                abs.display(),
+                if who.is_empty() { "nobody".to_owned() } else { who.join(", ") }
+            );
+        }
+        AclCommand::Clear { path } => {
+            let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+            store.clear_acl(&abs.to_string_lossy())?;
+            println!("{} is no longer restricted", abs.display());
         }
     }
     Ok(ExitCode::SUCCESS)
