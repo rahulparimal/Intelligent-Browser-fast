@@ -1323,6 +1323,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ibos-launcher"
+version = "0.1.0"
+
+[[package]]
 name = "ibos-llm"
 version = "0.1.0"
 dependencies = [

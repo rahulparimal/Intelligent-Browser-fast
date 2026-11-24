@@ -6,7 +6,7 @@ A fast, local browser agent and document search engine in Rust. One 15 MB execut
 - **Hybrid document search**: keyword (BM25) plus vectors, typo tolerance, per-document access control, answer checking.
 - **Local first**: the index is one SQLite file on your machine. Only what you configure (a model endpoint, an embedding endpoint) leaves it.
 
-> **Status: working prototype, tested on Linux.** 235 tests pass. Benchmarks use a scripted model and synthetic documents, so
+> **Status: working prototype, tested on Linux.** 251 tests pass. Benchmarks use a scripted model and synthetic documents, so
 > real-model success, real-embedding quality, and Windows and macOS are **not measured**. See [Honest limits](#honest-limits).
 
 ## What the measurements show
@@ -23,6 +23,20 @@ A fast, local browser agent and document search engine in Rust. One 15 MB execut
 
 Method and caveats: [`bench/RESULTS.md`](bench/RESULTS.md). The scripted-model comparison isolates what the agent controls; it
 does not show how a real model performs.
+
+## Install
+
+| Platform | How | Status |
+|---|---|---|
+| macOS, Linux | `curl -LsSf https://raw.githubusercontent.com/rahulparimal/Intelligent-Browser-fast/main/scripts/install.sh \| sh` (checks the SHA-256, installs to `~/.local`, no root) | Linux flow reproduced locally: package, checksum, install, smoke test, refusal of a tampered download |
+| macOS | `.dmg`: drag **Intelli** to Applications | Script written, **never run on a Mac** |
+| Windows | `Intelli-Rust-<version>-Setup.exe`, or `irm https://raw.githubusercontent.com/rahulparimal/Intelligent-Browser-fast/main/scripts/install.ps1 \| iex` | Script written, **never run on Windows** |
+| Any | `cargo build --release` (below) | Works on Linux |
+
+The installers are built by [`installers.yml`](.github/workflows/installers.yml) when a `v*` tag is pushed (the same design as the Python
+project: Inno Setup for Windows, a `.app` in a `.dmg` for macOS, tarball for the one-line installer, `SHA256SUMS` for each, optional
+signing and notarization). **No release has been published yet**, so the one-line installers have nothing to download until the first tag.
+Double-clicking **Intelli Search** runs `intelli-search`, which starts `intelli-rust ui --exit-when-closed`.
 
 ## Try it
 
@@ -106,7 +120,8 @@ set `IBOS_PY_REPO` to the Python project and run `python3 bench/agent_bench.py -
 
 ## Honest limits
 
-- **Known security gaps** (found in review, see [`docs/RECOMMENDATIONS.md`](docs/RECOMMENDATIONS.md)): the web UI ignores document access lists and has no authentication; DevTools listens on a loopback port; `--no-sandbox` is used when running as root; document extraction is not sandboxed; the allow-list is checked on navigation but not on sub-requests. Fixed in phase 1: the risky-click guard failing open, the card-check bypass, typed secrets reaching the model, file permissions, and a saved API key following a changed endpoint.
+- **Security, as of the latest commit** (details and the review that found these: [`docs/RECOMMENDATIONS.md`](docs/RECOMMENDATIONS.md)). Fixed and tested: the risky-click guard failing open; the card-check bypass; typed secrets reaching the model; file permissions; a saved API key following a changed endpoint; the web UI ignoring access lists (search, document list and AI answers now honour them); no authentication on the web UI (per-launch token); DevTools on a network port (now a private pipe on Linux and macOS); Chromium's sandbox switched off when running as root (now needs `--allow-no-sandbox`); document parsing in the main process (now a restricted worker); and requests a page makes to sites outside the allow-list.
+- **Still open:** the access-list "principal" is whatever you pass with `--as`; there is no per-user login, and no access-list editor in the web page (use `intelli-rust acl`). The request filter does not cover cross-origin frames in their own process, workers or WebSockets. On Windows DevTools still uses a loopback port. The extraction worker is only partly isolated on macOS and Windows (time, memory-on-Unix and output limits; no file or network restriction), and on a Linux kernel without Landlock. The launch token is in the link the program prints, so anyone who can read your terminal can use the page.
 
 - Agent benchmark uses a scripted model: no real-model success rate or cost yet.
 - No real embedding model was tested; the vector leg with the built-in embedder is weak on long passages. Hybrid did not beat keyword plus fuzzy in the synthetic test.

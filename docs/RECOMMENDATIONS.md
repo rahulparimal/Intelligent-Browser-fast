@@ -16,25 +16,25 @@ This is the merged result. Where they disagreed with the draft or with each othe
 |---|---|---|
 | G1 | A typed card number bypassed the card check if the text contained the literal `<secret>` | **Fixed**, test added |
 | G2 | Risk check failed open: a click on a handle the agent had not been shown (revealed through `more`, or invented) got no check at all | **Fixed**: the name is looked up in the full page; unknown handles are refused. Three e2e tests fail without the fix |
-| G3 | Allow-list enforced only on `go`; a link click could leave the allowed sites | **Partly fixed**: after click and back the browser is reset to a blank page if it left. Not fixed: sub-requests and the request that triggered the move are not blocked (needs CDP request interception) |
+| G3 | Allow-list enforced only on `go`; a link click could leave the allowed sites; sub-requests unrestricted | **Fixed** for the tab: after click and back the browser is reset to a blank page if it left, and every request the page makes (images, scripts, `fetch`) to a disallowed host is blocked before it leaves the browser (browser test fails without the fix). Not covered: cross-origin frames in their own process, workers, WebSockets |
 | - | Values typed into form fields (passwords, card numbers) were sent to the model in the next page snapshot | **Fixed**: fields labelled as secrets, bullet-only values and Luhn-valid numbers are shown as `[hidden]`. Not yet done: a full-run canary test over prompts, history, logs and stderr |
 | G9 | Index database, data directory and audit log were created with default permissions | **Fixed** (0600 / 0700) |
 | G6 | A saved API key followed a changed endpoint to the new host | **Fixed** |
-| G4 | The web UI search and AI-answer routes ignore access lists; restricted passages can reach the remote LLM | **Queued (P0)**. "0 leaks in 200 probes" is true of the library, not of the web UI |
-| G5 | The local web UI has no authentication | Queued (P0) |
-| G7 | Chromium DevTools listens on a loopback TCP port without authentication | Queued (P0): use a pipe |
-| G8 | `--no-sandbox` is used when running as root or when `INTELLI_NO_SANDBOX=1` | Queued (P0): refuse without an explicit flag |
-| - | PDF/docx extraction runs in-process with only `catch_unwind`; no timeout or memory limit | Queued (P0): subprocess sandbox and fuzzing |
+| G4 | The web UI search and AI-answer routes ignore access lists; restricted passages can reach the remote LLM | **Fixed**: access lists now live in `ibos-search` and are applied inside the query for search, the document list and AI answers; a test checks the restricted text is never sent to the model. The page acts as the principals given with `--as` (none by default) |
+| G5 | The local web UI has no authentication | **Fixed**: random per-launch token (cookie or header); every route returns 403 without it |
+| G7 | Chromium DevTools listens on a loopback TCP port without authentication | **Fixed on Linux and macOS**: DevTools over a private pipe; a test shows the browser process group has no listening socket (and that the check can see one when the port transport is used). Windows still uses the port |
+| G8 | `--no-sandbox` is used when running as root or when `INTELLI_NO_SANDBOX=1` | **Fixed**: running as root without `--allow-no-sandbox` (or `INTELLI_NO_SANDBOX=1`) is refused with an explanation; allowing it prints a warning |
+| - | PDF/docx extraction runs in-process with only `catch_unwind`; no timeout or memory limit | **Fixed (partly)**: a worker process with a time limit, memory cap (Unix), output cap, empty environment, and on Linux Landlock (reads only that file, no TCP; verified on this kernel). Not done: fuzzing; isolation on macOS and Windows |
 
 ## Harmonized priorities
 
 ### P0: trust and safety (finish before anything user-visible is added)
 1. ~~Fail-closed guard; `<secret>` bypass; origin check after click/back; field masking; file permissions; key vs endpoint~~ **done**
-2. One search service used by the CLI, the web UI and later MCP, with access lists enforced everywhere; the AI-answer route must filter by access list. *Accept:* the web UI returns no restricted document; one code path.
-3. Local web UI: per-launch token. DevTools over a pipe. Refuse `--no-sandbox` without a flag. *Accept:* request without the token gets 403; no DevTools TCP listener.
-4. Document extraction in a sandboxed subprocess (timeout, memory limit, no network) plus fuzzing. *Accept:* an infinite-loop PDF, a zip bomb and a huge sparse file are each recorded as an error within the timeout.
+2. ~~Access lists enforced in the web UI and AI answers~~ **done**. Still to do: one search service shared by CLI, web UI and later MCP (the CLI default path uses `ibos-retrieval`, the web UI uses `ibos-search`).
+3. ~~Per-launch token; DevTools over a pipe; refuse `--no-sandbox` without a flag~~ **done**
+4. ~~Document extraction in a restricted subprocess~~ **done** (fuzzing and macOS/Windows isolation not done).
 5. Fully-local mode with *external* proof: run a whole task and index under `unshare -n` (loopback only) or a recording proxy. *Accept:* zero non-loopback connections from the process.
-6. Page content marked as untrusted data in the prompt; domain policy enforced on every navigation and (via CDP interception) on sub-requests.
+6. Page content marked as untrusted data in the prompt. (Domain policy on every navigation and sub-request: **done**.)
 7. Canary-secret test over a full run (prompts, history, audit log, stderr). Then the vault ([design](security/VAULT-DESIGN.md)), in that order.
 
 ### P1: measurement (decides everything below)
@@ -76,6 +76,6 @@ This is the merged result. Where they disagreed with the draft or with each othe
 | Skills, parallel agents, plugin signing, installers | **Deferred or cut** | The agent is not yet proven; there are no users to share with |
 
 ## Status of this list
-Phase 1 (item 1, 17, part of 19) is implemented and tested: 235 tests pass including real-browser end-to-end tests, `clippy -D warnings`
+Phase 1 and phase 2 (items 1 to 4 and part of 6, 17, part of 19) are implemented and tested: 251 tests pass including real-browser end-to-end tests, `clippy -D warnings`
 and `cargo deny` are clean. The Word document and deck in this folder were built before phase 1: they describe a fuzzy latency of
 about 30 ms (now about 10 ms) and do not mention the guard fixes. Everything else above is planned, not built.

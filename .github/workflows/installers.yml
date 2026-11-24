@@ -1,0 +1,159 @@
+name: installers
+# Builds the double-click installers, same design as the Python project: Windows Setup .exe (Inno Setup), macOS .dmg (Apple Silicon +
+# Intel), and Linux/macOS .tar.gz for the one-line installer. Tag vX.Y.Z to attach them to the GitHub Release; run manually to get
+# them as build artifacts.
+# STATUS: the Linux leg was reproduced by hand (package, checksum, install, smoke test). The Windows and macOS legs have never run.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths: ["packaging/**", "scripts/install.*", ".github/workflows/installers.yml", "crates/ibos-launcher/**"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    env: # job-level so step `if:` conditions can see them; empty when the secrets are not configured (signing is then skipped)
+      APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-latest, experimental: false }
+          - { name: macos-arm64, os: macos-latest, arch: arm64, experimental: false }
+          - { name: macos-x86_64, os: macos-15-intel, arch: x86_64, experimental: true }
+          - { name: linux-x64, os: ubuntu-latest, experimental: false }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: version
+        id: v
+        shell: bash
+        run: echo "version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')" >> "$GITHUB_OUTPUT"
+      - name: build
+        run: cargo build --release --locked -p ibos-cli -p ibos-launcher
+
+      # ---------- Windows ----------
+      - name: stage (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist/windows
+          cp target/release/intelli-rust.exe target/release/intelli-search.exe dist/windows/
+          cp LICENSE dist/windows/LICENSE.txt
+      - name: smoke test (Windows, built files)
+        if: runner.os == 'Windows'
+        run: python packaging/smoke_test.py dist/windows/intelli-rust.exe dist/windows/intelli-search.exe
+      - name: build installer (Inno Setup)
+        if: runner.os == 'Windows'
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.v.outputs.version }}" packaging\windows\intelli.iss
+      - name: smoke test (Windows, silent install -> run -> uninstall)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist\installer\*.exe | Select-Object -First 1
+          $dir = Join-Path $env:RUNNER_TEMP "intelli-install"
+          Start-Process -Wait -FilePath $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/DIR=$dir"
+          python packaging/smoke_test.py "$dir\intelli-rust.exe" "$dir\intelli-search.exe"
+          if ($LASTEXITCODE -ne 0) { throw "installed app failed smoke test" }
+          $un = Get-ChildItem $dir\unins*.exe | Select-Object -First 1
+          Start-Process -Wait -FilePath $un.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES"
+          if (Test-Path "$dir\intelli-rust.exe") { throw "uninstall left files behind" }
+      - name: collect (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: mkdir -p out && cp dist/installer/*.exe out/
+
+      # ---------- macOS ----------
+      - name: import signing certificate (optional)
+        if: runner.os == 'macOS' && env.APPLE_CERT_BASE64 != ''
+        shell: bash
+        env:
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          echo "$APPLE_CERT_BASE64" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          rm cert.p12
+      - name: smoke test (macOS, built files)
+        if: runner.os == 'macOS'
+        run: python3 packaging/smoke_test.py target/release/intelli-rust target/release/intelli-search
+      - name: build dmg
+        if: runner.os == 'macOS'
+        env: { CODESIGN_IDENTITY: "${{ secrets.APPLE_SIGN_IDENTITY }}" }
+        run: packaging/macos/build_dmg.sh "${{ steps.v.outputs.version }}" "${{ matrix.arch }}"
+      - name: notarize (optional, needs Apple credentials)
+        if: runner.os == 'macOS' && env.APPLE_ID != ''
+        shell: bash
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          dmg=$(ls dist/*.dmg)
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$dmg"
+      - name: smoke test (macOS, mounted dmg)
+        if: runner.os == 'macOS'
+        run: |
+          hdiutil attach dist/*.dmg -mountpoint /tmp/intelli-dmg -nobrowse -quiet
+          test -d "/tmp/intelli-dmg/Intelli.app" && test -L /tmp/intelli-dmg/Applications
+          python3 packaging/smoke_test.py /tmp/intelli-dmg/Intelli.app/Contents/MacOS/intelli-rust /tmp/intelli-dmg/Intelli.app/Contents/MacOS/IntelliSearch
+          hdiutil detach /tmp/intelli-dmg -quiet
+      - name: tarball for the one-line installer (macOS)
+        if: runner.os == 'macOS'
+        run: packaging/linux/package.sh "${{ steps.v.outputs.version }}" "macos-${{ matrix.arch }}"
+      - name: collect (macOS)
+        if: runner.os == 'macOS'
+        run: mkdir -p out && cp dist/*.dmg dist/*.tar.gz out/
+
+      # ---------- Linux ----------
+      - name: smoke test + package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 packaging/smoke_test.py target/release/intelli-rust target/release/intelli-search
+          packaging/linux/package.sh "${{ steps.v.outputs.version }}" linux-x64
+          mkdir -p out && cp dist/*.tar.gz out/
+      - name: smoke test the one-line installer against the tarball (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd out && sha256sum *.tar.gz > "SHA256SUMS-${{ matrix.name }}.txt" && cd ..
+          prefix="$(mktemp -d)"
+          INTELLI_VERSION="${{ steps.v.outputs.version }}" INTELLI_RELEASE_URL="file://$PWD/out" INTELLI_PREFIX="$prefix" sh scripts/install.sh
+          python3 packaging/smoke_test.py "$prefix/bin/intelli-rust" "$prefix/bin/intelli-search"
+
+      - name: checksums
+        shell: bash
+        run: cd out && (sha256sum * 2>/dev/null || shasum -a 256 *) | grep -v SHA256SUMS > "SHA256SUMS-${{ matrix.name }}.txt" && cat "SHA256SUMS-${{ matrix.name }}.txt"
+      - uses: actions/upload-artifact@v4
+        with: { name: "installer-${{ matrix.name }}", path: out/* }
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { pattern: "installer-*", path: out/, merge-multiple: true }
+      - name: attach to the GitHub Release (create it if it does not exist yet)
+        env: { GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}" }
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || gh release create "${GITHUB_REF_NAME}" --generate-notes --title "${GITHUB_REF_NAME}"
+          gh release upload "${GITHUB_REF_NAME}" out/* --clobber

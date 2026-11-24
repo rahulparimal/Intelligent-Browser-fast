@@ -117,7 +117,14 @@ pub(crate) async fn ui(a: UiArgs, path: &str) -> Result<ExitCode> {
         principals: a.principals.clone(),
         ..ServeOptions::default()
     };
-    let running = ibos_server::start(Arc::clone(&store), &opts).await?;
+    // A second copy of the app (a double-click while one is open) must not fail on the busy default port: take any free one.
+    let running = match ibos_server::start(Arc::clone(&store), &opts).await {
+        Err(ibos_server::ServerError::Bind(port, _)) if port != 0 => {
+            eprintln!("Port {port} is busy; using a free one instead.");
+            ibos_server::start(Arc::clone(&store), &ServeOptions { port: 0, ..opts.clone() }).await?
+        }
+        other => other?,
+    };
     let docs = store.stats()?.documents;
     eprintln!(
         "Search home page: {}  ({docs} documents indexed; Ctrl+C to stop)\nThe link contains a one-time launch token: keep it private.",
