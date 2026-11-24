@@ -67,7 +67,7 @@ and [`.pptx`](docs/IntelliRust-Technical-Architecture.pptx). Crate-level notes: 
 
 ## Coming next
 
-See [`ROADMAP.md`](ROADMAP.md). Highlights, all **planned, not built**: a secret vault so the model never sees passwords or cards,
+See [`ROADMAP.md`](ROADMAP.md). Highlights, all **planned, not built**: a secret vault so the model never sees passwords or cards ([design with diagrams](docs/security/VAULT-DESIGN.md)),
 a fully-local mode, running your own CPU/GPU-quantized model as the agent's brain ([`docs/LOCAL-LLM.md`](docs/LOCAL-LLM.md)),
 a local embedder and reranker, an optional Qdrant backend, hybrid search in the web UI, skills (record and replay), an MCP server.
 

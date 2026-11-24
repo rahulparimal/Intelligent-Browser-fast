@@ -11,7 +11,7 @@ Everything below is **planned, not built**, unless marked done. Order is a propo
 ## Next: trust and privacy
 | Feature | What it gives you |
 |---|---|
-| **Secret vault** (`ibos-vault`) | Fill forms with passwords and cards that the model never sees. OS keychain (encrypted-file fallback), placeholders like `{{cred:bank.password}}`, bound to one domain, confirmation before filling, never indexed, never logged |
+| **Secret vault** (`ibos-vault`), [design with diagrams](docs/security/VAULT-DESIGN.md) | Fill forms with passwords and cards that the model never sees. OS keychain (encrypted-file fallback), placeholders like `{{cred:bank.password}}`, bound to one domain, confirmation before filling, never indexed, never logged |
 | **Fully local mode** | One switch that refuses any network call except to the browser and a local model, with a test that proves it |
 | **Prompt-injection shield** | Page text is marked as untrusted data; actions that came from page text need confirmation |
 
