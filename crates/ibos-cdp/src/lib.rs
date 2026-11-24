@@ -15,4 +15,4 @@ pub use browser::{Browser, LaunchOptions, Transport};
 pub use chrome::{find_browser, parse_devtools_url};
 pub use conn::{Conn, Event};
 pub use error::CdpError;
-pub use page::{Page, RawObservation, Viewport};
+pub use page::{Page, RawObservation, RequestFilter, Viewport};

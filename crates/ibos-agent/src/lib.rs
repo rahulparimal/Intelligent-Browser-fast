@@ -11,5 +11,5 @@ mod prompt;
 
 pub use action::{Action, parse_action};
 pub use agent::{Agent, AgentConfig, RunReport, StepCallback, StepLog, StopReason};
-pub use guard::{ConfirmMode, Guard, GuardConfig, Verdict, has_card_number, host_allowed};
+pub use guard::{ConfirmMode, Guard, GuardConfig, Verdict, has_card_number, host_allowed, request_allowed};
 pub use prompt::SYSTEM_PROMPT;

@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 use crate::conn::Conn;
 use crate::error::CdpError;
 
+/// Decides whether a request to a URL may go out.
+pub type RequestFilter = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Viewport {
     pub width: f64,
@@ -72,6 +75,46 @@ impl Page {
     pub fn with_navigation_timeout(mut self, t: Duration) -> Self {
         self.nav_timeout = t;
         self
+    }
+
+    /// Check every network request this tab makes (page, scripts, images, `fetch`, frames) against `allow`, and block those it
+    /// refuses before they leave the browser. Returns once interception is active, so nothing slips through between the call
+    /// and the first navigation.
+    ///
+    /// Not covered: requests made by other targets (cross-origin frames in their own process, workers), and `WebSockets`.
+    pub async fn restrict_requests(&self, allow: RequestFilter) -> Result<(), CdpError> {
+        let mut events = self.conn.subscribe();
+        self.call("Fetch.enable", json!({"patterns": [{"urlPattern": "*"}]})).await?;
+        let (conn, session) = (Arc::clone(&self.conn), self.session.clone());
+        tokio::spawn(async move {
+            loop {
+                let ev = match events.recv().await {
+                    Ok(ev) => ev,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(missed = n, "request filter fell behind; some requests may stay paused");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if ev.method != "Fetch.requestPaused" || ev.session_id.as_deref() != Some(session.as_str()) {
+                    continue;
+                }
+                let Ok(p) = serde_json::from_str::<Value>(&ev.params) else { continue };
+                let (Some(id), Some(url)) = (p["requestId"].as_str(), p["request"]["url"].as_str()) else { continue };
+                let _ = if allow(url) {
+                    conn.call("Fetch.continueRequest", json!({"requestId": id}), Some(&session)).await
+                } else {
+                    tracing::info!(%url, "blocked a request to a site that is not allowed");
+                    conn.call(
+                        "Fetch.failRequest",
+                        json!({"requestId": id, "errorReason": "BlockedByClient"}),
+                        Some(&session),
+                    )
+                    .await
+                };
+            }
+        });
+        Ok(())
     }
 
     /// Evaluate a JavaScript expression and return its JSON value.

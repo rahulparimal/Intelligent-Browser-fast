@@ -22,6 +22,8 @@ struct Site {
     submissions: Mutex<Vec<String>>,
     hits: Mutex<Vec<String>>,
     home_loads: AtomicUsize,
+    /// (Host header, path) of every request to the tracking routes.
+    seen: Mutex<Vec<(String, String)>>,
 }
 
 const LOGIN: &str = r#"<!doctype html><html><head><title>Login</title></head><body>
@@ -50,6 +52,18 @@ async fn serve_site() -> (Arc<Site>, String) {
                 let _ = write!(rows, "<li><span>Row {i}</span> <button onclick=\"document.getElementById('result').textContent='deleted {i}'\">Delete item {i}</button></li>");
             }
             Html(format!("<html><head><title>Many</title></head><body><h1>Items</h1><ul>{rows}</ul><div id=\"result\"></div></body></html>"))
+        }))
+        .route("/subs", get(|headers: axum::http::HeaderMap| async move {
+            let host = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("127.0.0.1").replace("127.0.0.1", "localhost");
+            Html(format!("<html><head><title>Subs</title></head><body><div id=\"result\">pending</div>\
+                <img src=\"http://{host}/track/img\"><img src=\"/track/ok\">\
+                <script>fetch('http://{host}/track/fetch').then(function(){{document.getElementById('result').textContent='sent'}}).catch(function(){{document.getElementById('result').textContent='blocked'}})</script>\
+                </body></html>"))
+        }))
+        .route("/track/{name}", get(|State(s): State<Arc<Site>>, headers: axum::http::HeaderMap, Path(name): Path<String>| async move {
+            let host = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("").to_owned();
+            s.seen.lock().unwrap().push((host, name));
+            "ok"
         }))
         .route("/leave", get(|headers: axum::http::HeaderMap| async move {
             let host = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("127.0.0.1").replace("127.0.0.1", "localhost");
@@ -459,4 +473,29 @@ async fn a_link_that_leaves_the_allowed_sites_ends_on_a_blank_page() {
     let report = Agent::new(page.clone(), llm, cfg(), guard).run("follow the link").await;
     assert!(report.success, "{report:?}");
     assert_eq!(page.url().await.unwrap(), "about:blank", "the agent did not stay on the other site");
+}
+
+#[tokio::test]
+async fn sub_requests_to_other_sites_are_blocked_before_they_leave_the_browser() {
+    let Some((_b, page)) = browser().await else { return };
+    let (site, base) = serve_site().await;
+    let url = format!("{base}/subs");
+    let llm = Arc::new(FnLlm::new(move |_req: &ChatRequest, n| match n {
+        0 => json!({"a": "go", "url": url}).to_string(),
+        _ => json!({"a": "done", "t": "looked", "ok": true}).to_string(),
+    }));
+    let guard = Guard::deny_risky(GuardConfig { allowed_domains: vec!["127.0.0.1".into()], ..GuardConfig::default() });
+    let report = Agent::new(page.clone(), llm, cfg(), guard).run("look at the page").await;
+    assert!(report.success, "{report:?}");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await; // let any request that was not blocked arrive
+    let seen = site.seen.lock().unwrap().clone();
+    assert!(
+        seen.iter().any(|(h, n)| h.starts_with("127.0.0.1") && n == "ok"),
+        "allowed sub-requests still work: {seen:?}"
+    );
+    assert!(
+        seen.iter().all(|(h, _)| !h.starts_with("localhost")),
+        "a request reached the server on the disallowed host: {seen:?}"
+    );
+    assert_eq!(page.evaluate("document.getElementById('result').textContent").await.unwrap(), json!("blocked"));
 }

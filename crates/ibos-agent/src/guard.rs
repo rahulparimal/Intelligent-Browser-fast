@@ -152,6 +152,13 @@ fn host_matches(host: &str, pattern: &str) -> bool {
     }
 }
 
+/// Whether a *request* a page makes (not a navigation the agent chose) may go out. Inline resources (`data:`, `blob:`,
+/// `about:`) are always fine; anything else follows [`host_allowed`].
+pub fn request_allowed(url: &str, allowed: &[String], blocked: &[String]) -> bool {
+    let scheme = url.split_once(':').map_or("", |s| s.0).to_lowercase();
+    matches!(scheme.as_str(), "data" | "blob" | "about") || host_allowed(url, allowed, blocked).is_ok()
+}
+
 /// Whether `url` may be opened: http(s) only (plus `about:blank`), not blocked, and allowed if an allow-list exists.
 pub fn host_allowed(url: &str, allowed: &[String], blocked: &[String]) -> Result<(), String> {
     if url == "about:blank" {
@@ -199,6 +206,15 @@ impl Guard {
 
     pub fn check_navigation(&self, url: &str) -> Result<(), String> {
         host_allowed(url, &self.cfg.allowed_domains, &self.cfg.blocked_domains)
+    }
+
+    /// A filter for every request the page makes, if any site rules are set (otherwise there is nothing to enforce).
+    pub fn request_filter(&self) -> Option<ibos_cdp::RequestFilter> {
+        if self.cfg.allowed_domains.is_empty() && self.cfg.blocked_domains.is_empty() {
+            return None;
+        }
+        let (allowed, blocked) = (self.cfg.allowed_domains.clone(), self.cfg.blocked_domains.clone());
+        Some(std::sync::Arc::new(move |url: &str| request_allowed(url, &allowed, &blocked)))
     }
 
     /// Why this action needs approval, if it does.

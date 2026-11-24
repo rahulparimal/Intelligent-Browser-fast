@@ -173,6 +173,14 @@ impl Agent {
         let mut last_url = String::new();
         let mut note: Option<String> = None;
         let (mut invalid, mut steps) = (0u32, Vec::new());
+        // With site rules set, every request the page makes (images, scripts, fetch), not only the agent's own navigation, is checked.
+        // If that cannot be switched on, stop rather than browse unprotected.
+        if let Some(filter) = self.guard.request_filter()
+            && let Err(e) = self.page.restrict_requests(filter).await
+        {
+            let why = StopReason::BrowserError(format!("could not restrict the page's requests: {e}"));
+            return report(steps, ctx.usage().clone(), &self.guard, why, "", false);
+        }
 
         for n in 1..=self.cfg.max_steps {
             arena.reset();
