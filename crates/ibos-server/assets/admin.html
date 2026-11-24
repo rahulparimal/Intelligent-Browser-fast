@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intelli Search - Admin</title>
+<style>
+:root{--bg:#fff;--fg:#1a1d21;--muted:#5f6b7a;--line:#e3e7ec;--accent:#2563eb;--card:#f7f9fb;--ok:#15803d;--bad:#b91c1c;--warn:#b45309;--warnbg:#fef3c7}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1318;--fg:#e8ecf1;--muted:#98a3b1;--line:#262d36;--accent:#6ea0ff;--card:#161c23;--ok:#4ade80;--bad:#f87171;--warn:#fcd34d;--warnbg:#3b2f08}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:860px;margin:0 auto;padding:16px}nav{display:flex;gap:16px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line);margin-bottom:16px}
+nav a{color:var(--accent);text-decoration:none}nav strong{margin-right:auto}h2{font-size:1.05rem;margin:0 0 4px}
+section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}.hint{color:var(--muted);font-size:.85rem;margin:0 0 12px}
+.stats{display:flex;gap:24px;flex-wrap:wrap}.stat b{display:block;font-size:1.4rem}.stat span{color:var(--muted);font-size:.8rem}
+label{display:block;margin:10px 0 2px;font-weight:600;font-size:.9rem}input[type=text],input[type=number],input[type=password],input[type=search]{width:100%;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.check{display:flex;gap:8px;align-items:center;margin:8px 0;font-weight:400}.check input{width:auto}
+button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);cursor:pointer}button.p{background:var(--accent);color:#fff;border:0}button.d{border-color:var(--bad);color:var(--bad)}
+button:disabled{opacity:.5;cursor:default}input:focus,button:focus{outline:2px solid var(--accent);outline-offset:1px}
+.banner{background:var(--warnbg);color:var(--warn);border:1px solid var(--warn);border-radius:8px;padding:10px 12px;margin-bottom:12px;display:none}
+table{width:100%;border-collapse:collapse;font-size:.85rem}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);word-break:break-all}.missing{color:var(--bad)}
+.msg{min-height:1.4em;margin-top:8px;font-size:.9rem}.ok{color:var(--ok)}.bad{color:var(--bad)}.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:8px;display:none}.bar i{display:block;height:100%;background:var(--accent);width:0}
+.chips{display:flex;gap:8px;flex-wrap:wrap}.chips label{margin:0;font-weight:400;display:flex;gap:4px;align-items:center;background:var(--bg);border:1px solid var(--line);border-radius:99px;padding:2px 10px}.chips input{width:auto}
+ul.f{list-style:none;padding:0;margin:0 0 8px}ul.f li{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}ul.f span{flex:1;word-break:break-all}
+</style></head>
+<body><main>
+<nav><strong>Intelli Search - Admin</strong><a href="/">Search</a></nav>
+<div class="banner" id="stale" role="status">Settings that affect indexing changed. <button id="rebuild" class="p">Re-index everything now</button></div>
+<div class="banner" id="jobbanner" role="status" style="background:var(--card);color:var(--fg);border-color:var(--line)"><span id="jobtext"></span><div class="bar" id="bar" style="display:block"><i id="barfill"></i></div></div>
+
+<section><h2>Index</h2><p class="hint" id="where"></p>
+<div class="stats"><div class="stat"><b id="s-docs">-</b><span>documents</span></div><div class="stat"><b id="s-chunks">-</b><span>passages</span></div><div class="stat"><b id="s-size">-</b><span>indexed size</span></div><div class="stat"><b id="s-folders">-</b><span>folders</span></div></div></section>
+
+<section><h2>Folders</h2><p class="hint">Re-indexing scans these folders, adds new files, updates changed ones and removes files that were deleted.</p>
+<ul class="f" id="folders"></ul>
+<div style="display:flex;gap:8px;flex-wrap:wrap"><button id="pick">Choose folder…</button><input type="text" id="path" placeholder="or type a folder path" aria-label="Folder path" style="flex:1;min-width:200px"><button id="addpath">Add and index</button></div>
+<div style="margin-top:10px;display:flex;gap:8px"><button id="reindex">Re-index all folders</button><button id="force" title="Re-read every file even if unchanged">Force full rebuild</button></div><div class="msg" id="fmsg"></div></section>
+
+<section><h2>Search settings</h2><p class="hint">Applied immediately.</p>
+<div class="row"><div><label for="result_limit">Results per search</label><input type="number" id="result_limit" min="1" max="50"></div>
+<div><label for="snippet_words">Snippet length (words)</label><input type="number" id="snippet_words" min="8" max="64"></div></div>
+<label class="check"><input type="checkbox" id="group_by_document"> Show each document once (its best passage)</label>
+<label class="check"><input type="checkbox" id="auto_reindex_on_start"> Re-index my folders when the app starts</label></section>
+
+<section><h2>Indexing settings</h2><p class="hint">Changing these makes the current index stale until you re-index.</p>
+<div class="row"><div><label for="chunk_chars">Passage size (characters)</label><input type="number" id="chunk_chars" min="300" max="3000"></div>
+<div><label for="max_file_mb">Skip files larger than (MB)</label><input type="number" id="max_file_mb" min="1" max="200"></div></div>
+<label>File types</label><div class="chips" id="exts"></div></section>
+
+<section><h2>AI answers (optional)</h2>
+<p class="hint">Adds an <b>Answer</b> button to search. When clicked, the top passages are sent to the endpoint below to write a cited answer. <b id="privacy"></b> Works with OpenAI, Ollama (<code>http://localhost:11434/v1</code>), LM Studio and other OpenAI-compatible servers.</p>
+<label class="check"><input type="checkbox" id="answers_enabled"> Enable AI answers</label>
+<div class="row"><div><label for="llm_base_url">Endpoint</label><input type="text" id="llm_base_url" placeholder="https://api.openai.com/v1"></div>
+<div><label for="llm_model">Model</label><input type="text" id="llm_model" placeholder="gpt-4o-mini"></div></div>
+<div class="row"><div><label for="llm_api_key">API key <span id="keystate" class="hint"></span></label><input type="password" id="llm_api_key" autocomplete="off" placeholder="leave blank to keep the saved key"></div>
+<div><label for="answer_passages">Passages sent</label><input type="number" id="answer_passages" min="1" max="10"></div>
+<div><label for="llm_timeout_s">Timeout (seconds)</label><input type="number" id="llm_timeout_s" min="5" max="120"></div></div>
+<div style="margin-top:10px;display:flex;gap:8px"><button id="test">Test connection</button><button id="clearkey" class="d">Remove saved key</button></div><div class="msg" id="lmsg"></div></section>
+
+<div style="display:flex;gap:8px;align-items:center;margin-bottom:16px"><button id="save" class="p">Save settings</button><span class="msg" id="smsg"></span></div>
+
+<section><h2>Documents</h2><input type="search" id="dq" placeholder="Filter by name or path" aria-label="Filter documents"><table><thead><tr><th>Title</th><th>Passages</th><th>Size</th><th></th></tr></thead><tbody id="docs"></tbody></table><div class="msg" id="dmsg"></div></section>
+
+<section><h2>Danger zone</h2><p class="hint">Removes everything from the index. Your files are not touched.</p><button class="d" id="clear">Empty the index</button></section>
+
+<script>
+const $=i=>document.getElementById(i);const EXTS=['.txt','.md','.markdown','.rst','.html','.htm','.pdf','.docx','.csv','.log'];
+const api=async(p,b)=>{const r=await fetch(p,b===undefined?{}:{method:'POST',headers:{'X-Intelli':'1','Content-Type':'application/json'},body:JSON.stringify(b)});let d={};try{d=await r.json()}catch(e){}if(!r.ok&&!d.error)d.error='HTTP '+r.status;return{ok:r.ok,d}};
+const fmt=n=>n>1048576?(n/1048576).toFixed(1)+' MB':n>1024?Math.round(n/1024)+' KB':n+' B';
+const say=(id,t,ok)=>{const e=$(id);e.textContent=t;e.className='msg '+(ok===true?'ok':ok===false?'bad':'')};
+let loaded=false,timer=null;
+function fill(s){for(const k of ['result_limit','snippet_words','chunk_chars','max_file_mb','answer_passages','llm_timeout_s','llm_base_url','llm_model'])$(k).value=s[k];
+ for(const k of ['group_by_document','auto_reindex_on_start','answers_enabled'])$(k).checked=!!s[k];
+ const c=$('exts');c.textContent='';for(const e of EXTS){const l=document.createElement('label');const i=document.createElement('input');i.type='checkbox';i.value=e;i.checked=s.extensions.includes(e);l.append(i,e);c.append(l)}
+ $('keystate').textContent=s.has_api_key?'(a key is saved)':'(no key saved)';
+ $('privacy').textContent=!s.llm_base_url?'':s.llm_is_local?'This endpoint is on your computer, so passages stay local.':'This endpoint is NOT on your computer: passages will leave it.'}
+function render(st){$('where').textContent='Stored at '+st.index_path;$('s-docs').textContent=st.stats.documents;$('s-chunks').textContent=st.stats.chunks;$('s-size').textContent=fmt(st.stats.bytes);$('s-folders').textContent=st.stats.folders;
+ $('stale').style.display=st.needs_reindex?'block':'none';
+ const ul=$('folders');ul.textContent='';if(!st.folders.length){const li=document.createElement('li');li.textContent='No folders yet.';ul.append(li)}
+ for(const f of st.folders){const li=document.createElement('li');const sp=document.createElement('span');sp.textContent=f.path+(f.exists?'':'  (missing)');if(!f.exists)sp.className='missing';
+  const b=document.createElement('button');b.textContent='Remove';b.className='d';b.onclick=async()=>{if(!confirm('Remove this folder and its documents from the index? Your files are not deleted.'))return;const r=await api('/api/admin/folders/remove',{path:f.path});if(r.ok){render(r.d);docs()}};li.append(sp,b);ul.append(li)}
+ const j=st.job;$('jobbanner').style.display=(j.running||j.result||j.error)?'block':'none';
+ if(j.running){$('jobtext').textContent='Working: '+j.kind+' '+j.done+' / '+(j.total||'?')+' files...';$('barfill').style.width=(j.total?Math.round(100*j.done/j.total):5)+'%'}
+ else if(j.error){$('jobtext').textContent='Failed: '+j.error;$('barfill').style.width='0'}
+ else if(j.result){const r=j.result;$('jobtext').textContent='Done: '+r.indexed+' indexed, '+r.unchanged+' unchanged, '+r.removed+' removed, '+r.failed+' failed'+(r.empty?', '+r.empty+' with no readable text (scanned PDFs?)':'')+'.';$('barfill').style.width='100%'}
+ ['reindex','force','addpath','rebuild'].forEach(i=>$(i).disabled=j.running);
+ if(!loaded){fill(st.settings);loaded=true}
+ clearTimeout(timer);timer=setTimeout(refresh,j.running?700:4000)}
+let docsJob=-1;
+async function refresh(){const r=await api('/api/admin/state');if(r.ok){render(r.d);const j=r.d.job;if(!j.running&&j.id!==docsJob){docsJob=j.id;docs()}}else say('smsg',r.d.error,false)}
+async function docs(){const r=await api('/api/admin/docs?limit=100&q='+encodeURIComponent($('dq').value));if(!r.ok)return;const tb=$('docs');tb.textContent='';
+ for(const d of r.d.docs){const tr=document.createElement('tr');const t=document.createElement('td');t.textContent=d.title;const sub=document.createElement('div');sub.className='hint'+(d.exists?'':' missing');sub.textContent=d.path+(d.exists?'':'  (file missing)');t.append(sub);
+  const c=document.createElement('td');c.textContent=d.chunks+(d.chunks?'':' (no text)');const s=document.createElement('td');s.textContent=fmt(d.bytes);const a=document.createElement('td');const b=document.createElement('button');b.textContent='Remove';b.onclick=async()=>{const x=await api('/api/admin/docs/remove',{id:d.id});if(x.ok){render(x.d);docs()}};a.append(b);tr.append(t,c,s,a);tb.append(tr)}
+ $('dmsg').textContent=r.d.total>r.d.docs.length?'Showing '+r.d.docs.length+' of '+r.d.total+'. Filter to narrow.':r.d.total?'':'No documents indexed.'}
+function collect(){const b={};for(const k of ['result_limit','snippet_words','chunk_chars','max_file_mb','answer_passages','llm_timeout_s'])b[k]=Number($(k).value);
+ for(const k of ['group_by_document','auto_reindex_on_start','answers_enabled'])b[k]=$(k).checked;b.llm_base_url=$('llm_base_url').value;b.llm_model=$('llm_model').value;
+ const key=$('llm_api_key').value;if(key)b.llm_api_key=key;b.extensions=[...document.querySelectorAll('#exts input:checked')].map(i=>i.value);return b}
+$('save').onclick=async()=>{const r=await api('/api/admin/settings',collect());if(r.ok){say('smsg','Saved.',true);$('llm_api_key').value='';fill(r.d.settings);render(r.d)}else say('smsg',r.d.error,false)};
+$('clearkey').onclick=async()=>{const r=await api('/api/admin/settings',{clear_api_key:true,answers_enabled:false});if(r.ok){say('lmsg','Key removed and AI answers turned off.',true);fill(r.d.settings)}else say('lmsg',r.d.error,false)};
+$('test').onclick=async()=>{say('lmsg','Testing...');const s=await api('/api/admin/settings',collect());if(!s.ok){say('lmsg',s.d.error,false);return}fill(s.d.settings);$('llm_api_key').value='';const r=await api('/api/admin/llm/test',{});say('lmsg',r.ok?r.d.message:r.d.error,r.ok&&r.d.ok)};
+$('pick').onclick=async()=>{say('fmsg','Waiting for you to choose a folder...');const r=await api('/api/pick',{});if(r.d.path){$('path').value=r.d.path;add(r.d.path)}else say('fmsg','No folder chosen.')};
+async function add(p){const r=await api('/api/admin/folders/add',{path:p});say('fmsg',r.ok?'Indexing started.':r.d.error,r.ok);if(r.ok){$('path').value='';render(r.d)}}
+$('addpath').onclick=()=>$('path').value&&add($('path').value);
+$('reindex').onclick=async()=>{const r=await api('/api/admin/reindex',{});say('fmsg',r.ok?'Re-index started.':r.d.error,r.ok);if(r.ok)render(r.d)};
+$('force').onclick=async()=>{const r=await api('/api/admin/reindex',{force:true});say('fmsg',r.ok?'Full rebuild started.':r.d.error,r.ok);if(r.ok)render(r.d)};
+$('rebuild').onclick=async()=>{const r=await api('/api/admin/reindex',{force:true});if(r.ok)render(r.d)};
+$('clear').onclick=async()=>{if(!confirm('Empty the whole index? Your files are not deleted.'))return;const r=await api('/api/admin/clear',{confirm:'clear'});if(r.ok){render(r.d);docs()}};
+let dt;$('dq').oninput=()=>{clearTimeout(dt);dt=setTimeout(docs,250)};
+setInterval(()=>fetch('/api/ping').catch(()=>{}),5000);fetch('/api/ping').catch(()=>{});refresh();docs();
+</script></main></body></html>

@@ -1,0 +1,24 @@
+[package]
+name = "ibos-dom"
+description = "Page distillation: turns the browser's accessibility tree and layout into the smallest useful description of a page"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ibos-ctx.workspace = true
+ibos-mem.workspace = true
+bumpalo.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+dhat = "0.3"
+proptest.workspace = true

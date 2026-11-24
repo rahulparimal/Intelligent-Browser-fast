@@ -1,0 +1,28 @@
+[package]
+name = "ibos-cdp"
+description = "Chrome DevTools Protocol client and browser supervisor: timeouts on every call, process-tree cleanup, no orphans"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ibos-mem.workspace = true
+base64 = "0.22"
+command-group = { version = "5", features = ["with-tokio"] }
+futures-util = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite = "0.30"
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

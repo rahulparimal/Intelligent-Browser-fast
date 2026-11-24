@@ -1,0 +1,28 @@
+[package]
+name = "ibos-ctx"
+description = "Context engine: observation diffing, token budgets, cache-aware prompt assembly and history compaction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Exact OpenAI-family token counts (bundles the BPE tables; no network at runtime).
+openai-tokenizer = ["dep:tiktoken-rs"]
+
+[dependencies]
+ibos-mem.workspace = true
+blake3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tiktoken-rs = { version = "0.12", optional = true }
+
+[dev-dependencies]
+proptest.workspace = true

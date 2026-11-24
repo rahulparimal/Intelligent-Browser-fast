@@ -1,0 +1,20 @@
+[package]
+name = "ibos-mem"
+description = "Memory budgeting and bounded buffers for the intelli-rust agent runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+bumpalo.workspace = true
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+
+[dev-dependencies]
+proptest.workspace = true
+dhat = "0.3"

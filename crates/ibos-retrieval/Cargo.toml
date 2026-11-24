@@ -1,0 +1,28 @@
+[package]
+name = "ibos-retrieval"
+description = "Hybrid retrieval on top of the FTS5 index: dense vectors, rank fusion, reranking, ACLs, evidence packing, evaluation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ibos-mem.workspace = true
+ibos-ctx.workspace = true
+ibos-search.workspace = true
+blake3.workspace = true
+rusqlite = { version = "0.43", features = ["bundled"] }
+reqwest = { version = "0.13", features = ["json", "blocking"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile = "3"

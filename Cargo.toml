@@ -1,0 +1,67 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Intelli Browser OS contributors"]
+repository = "https://github.com/rahulparimal/intelli-browser-os"
+publish = false
+
+[workspace.dependencies]
+# internal
+ibos-mem = { path = "crates/ibos-mem" }
+ibos-ctx = { path = "crates/ibos-ctx" }
+ibos-dom = { path = "crates/ibos-dom" }
+ibos-cdp = { path = "crates/ibos-cdp" }
+ibos-search = { path = "crates/ibos-search" }
+ibos-retrieval = { path = "crates/ibos-retrieval" }
+ibos-server = { path = "crates/ibos-server" }
+ibos-llm = { path = "crates/ibos-llm" }
+ibos-agent = { path = "crates/ibos-agent" }
+# external
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "net", "io-util", "fs", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bumpalo = { version = "3", features = ["collections"] }
+blake3 = "1"
+proptest = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "warn"
+# pedantic rules that fight readability more than they help
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 1

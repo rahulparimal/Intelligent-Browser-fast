@@ -1,0 +1,30 @@
+[package]
+name = "ibos-agent"
+description = "The browser agent: observe, distill, decide, check, act - with guardrails and a token budget"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ibos-cdp.workspace = true
+ibos-ctx.workspace = true
+ibos-dom.workspace = true
+ibos-llm.workspace = true
+ibos-mem.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url = "2"
+
+[dev-dependencies]
+axum = "0.8"
+tempfile = "3"
+async-trait = "0.1"

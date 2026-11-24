@@ -1,0 +1,29 @@
+[package]
+name = "ibos-server"
+description = "Local web server for the search home page, admin pages and optional AI answers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ibos-search.workspace = true
+ibos-llm.workspace = true
+ibos-ctx.workspace = true
+axum = "0.8"
+bytes = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+webbrowser = "1"
+
+[dev-dependencies]
+reqwest = { version = "0.13", features = ["json"] }
+tempfile = "3"

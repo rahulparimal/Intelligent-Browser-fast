@@ -1,0 +1,25 @@
+[package]
+name = "ibos-llm"
+description = "Model gateway: OpenAI-compatible and Anthropic clients with cache-aware requests, retries and usage reporting"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ibos-ctx.workspace = true
+async-trait = "0.1"
+reqwest = { version = "0.13", features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+axum = "0.8"

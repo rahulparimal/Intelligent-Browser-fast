@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Intelli Search</title>
+<style>
+:root{--bg:#fff;--fg:#1a1d21;--muted:#5f6b7a;--line:#e3e7ec;--accent:#2563eb;--card:#f7f9fb;--mark:#fde68a}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1318;--fg:#e8ecf1;--muted:#98a3b1;--line:#262d36;--accent:#6ea0ff;--card:#161c23;--mark:#5b4a05}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:760px;margin:0 auto;padding:0 16px}
+header{padding:12vh 0 20px;text-align:center}.top header{padding:24px 0 12px}
+h1{font-size:2rem;margin:0 0 4px;letter-spacing:-.02em}.sub{color:var(--muted);margin:0 0 20px}.top h1{font-size:1.2rem;display:inline}.top .sub{display:none}
+form{display:flex;gap:8px}input[type=search]{flex:1;font:inherit;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--fg)}
+input:focus,button:focus{outline:2px solid var(--accent);outline-offset:1px}
+button{font:inherit;padding:0 20px;border:0;border-radius:12px;background:var(--accent);color:#fff;cursor:pointer}
+.res{list-style:none;padding:0;margin:8px 0 40px}.res li{padding:16px 0;border-bottom:1px solid var(--line)}
+.t{font-weight:600}.p{color:var(--muted);font-size:.85rem;word-break:break-all}.s{margin:6px 0 0}mark{background:var(--mark);color:inherit;border-radius:3px;padding:0 2px}
+.ansbox{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:8px 0}.ansbox .w{color:#b45309;font-size:.85rem}.ansbox ol{margin:8px 0 0;padding-left:1.2em;font-size:.85rem;color:var(--muted)}.empty{color:var(--muted);padding:24px 0}details{margin-top:28px;color:var(--muted)}summary{cursor:pointer}
+.idx{display:flex;gap:8px;margin-top:10px}.idx input{flex:1;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--fg)}
+.idx button{padding:10px 16px;background:var(--card);color:var(--fg);border:1px solid var(--line)}#msg{margin-top:8px;min-height:1.5em}
+</style></head>
+<body><main id="m">
+<header><nav style="text-align:right;font-size:.9rem"><a href="/admin" style="color:var(--accent);text-decoration:none">Admin</a></nav><h1>Intelli Search</h1><p class="sub">Search your own documents. Everything stays on this computer.</p>
+<form id="f" role="search"><input id="q" type="search" placeholder="Search your documents" aria-label="Search query" autofocus><button>Search</button><button type="button" id="ans" style="display:none;background:var(--card);color:var(--fg);border:1px solid var(--line)">Answer</button></form></header>
+<div id="answer" aria-live="polite" style="display:none"></div>
+<div id="out" aria-live="polite"></div>
+<details><summary>Add documents</summary>
+<div class="idx"><button id="pick" type="button">Choose folder…</button></div>
+<form class="idx" id="ix"><input id="path" placeholder="or type a folder path, e.g. ~/Documents" aria-label="Folder or file to index"><button>Index</button></form>
+<div id="msg"></div></details>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+async function search(q){
+  document.body.classList.add('top');$('answer').style.display='none';
+  const r=await fetch('/api/search?q='+encodeURIComponent(q)); const d=await r.json();
+  const out=$('out'); out.textContent='';
+  if(!d.results.length){const e=document.createElement('div');e.className='empty';e.textContent='No results. Try other words, or add documents below.';out.append(e);return}
+  const ul=document.createElement('ul');ul.className='res';
+  for(const h of d.results){
+    const li=document.createElement('li');
+    const t=document.createElement('div');t.className='t';t.textContent=h.title;
+    const p=document.createElement('div');p.className='p';p.textContent=h.path+(h.page>1?'  (p.'+h.page+')':'');
+    const s=document.createElement('p');s.className='s';s.innerHTML=h.snippet; // server escapes everything except <mark>
+    li.append(t,p,s);ul.append(li);
+  }
+  out.append(ul);
+}
+async function index(path){$('msg').textContent='Indexing...';
+  const r=await fetch('/api/index',{method:'POST',headers:{'X-Intelli':'1','Content-Type':'application/json'},body:JSON.stringify({path})});
+  const d=await r.json();$('msg').textContent=r.ok?`Indexed ${d.indexed}, unchanged ${d.unchanged}, skipped ${d.skipped}, failed ${d.failed}.`:(d.error||'Failed');}
+$('pick').onclick=async()=>{$('msg').textContent='Waiting for you to choose a folder...';
+  const r=await fetch('/api/pick',{method:'POST',headers:{'X-Intelli':'1'}});const d=await r.json();
+  if(d.path)index(d.path);else $('msg').textContent='No folder chosen. You can type a path below instead.'};
+setInterval(()=>fetch('/api/ping').catch(()=>{}),5000);fetch('/api/ping').catch(()=>{});
+fetch('/health').then(r=>r.json()).then(h=>{if(h.answers)$('ans').style.display=''}).catch(()=>{});
+$('ans').onclick=async()=>{const q=$('q').value.trim();if(!q)return;document.body.classList.add('top');const box=$('answer');box.style.display='block';box.textContent='Thinking...';
+  const r=await fetch('/api/answer',{method:'POST',headers:{'X-Intelli':'1','Content-Type':'application/json'},body:JSON.stringify({q})});const d=await r.json();box.textContent='';
+  const b=document.createElement('div');b.className='ansbox';if(!r.ok){b.textContent=d.error||'Failed';box.append(b);return}
+  const p=document.createElement('div');p.textContent=d.text;b.append(p);for(const w of d.warnings){const x=document.createElement('div');x.className='w';x.textContent=w;b.append(x)}
+  if(d.sources.length){const ol=document.createElement('ol');for(const s of d.sources){const li=document.createElement('li');li.textContent=s.title+(s.page>1?' (p.'+s.page+')':'')+' - '+s.path;ol.append(li)}b.append(ol)}box.append(b)};
+$('f').onsubmit=e=>{e.preventDefault();const q=$('q').value.trim();if(q)search(q)};
+$('ix').onsubmit=e=>{e.preventDefault();index($('path').value)};
+</script></body></html>

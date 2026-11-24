@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Application form</title><style>body{font:16px sans-serif;margin:0;padding:12px}</style></head><body>
+<h1>Job application</h1>
+<form><label>Full name <input name="n" required></label>
+<label>Email <input type="email" name="e" required placeholder="you@example.com"></label>
+<label>Position <select name="p"><option>Engineer</option><option selected>Designer</option><option>Manager</option></select></label>
+<fieldset><legend>Work mode</legend><label><input type="radio" name="m" value="r" checked> Remote</label> <label><input type="radio" name="m" value="o"> Office</label></fieldset>
+<label><input type="checkbox" name="t" checked> I accept the terms</label>
+<label>Cover letter <textarea name="c" rows="4">Hello</textarea></label>
+<button type="submit" disabled>Submit application</button> <button type="reset">Reset</button></form></body></html>

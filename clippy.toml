@@ -1,0 +1,4 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+doc-valid-idents = ["SQLite", "FTS5", "BM25", "OpenAI", "DevTools", "PyO3", "macOS", "ONNX", "WebSocket", "TypeSafe", "RAGJev", ".."]
