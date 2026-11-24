@@ -192,6 +192,7 @@ pub struct Retriever {
     budget: MemoryBudget,
     policy: Policy,
     cache: Mutex<Cache>,
+    vocab: Mutex<Option<Vocab>>,
 }
 
 /// Principal stored for an empty ACL. Callers cannot present it: principals containing NUL are dropped in `search`.
@@ -236,6 +237,7 @@ impl Retriever {
             budget,
             policy: Policy::Open,
             cache: Mutex::new(Cache { generation: -1, resident: None, mode: VectorMode::None }),
+            vocab: Mutex::new(None),
         })
     }
 
@@ -449,7 +451,7 @@ impl Retriever {
                 if !q.fuzzy || term_matches(&db, &quoted) {
                     return quoted;
                 }
-                let near = nearest_terms(&db, t);
+                let near = self.nearest_terms(&db, t);
                 if near.is_empty() {
                     quoted
                 } else {
@@ -589,33 +591,50 @@ pub(crate) fn edit_distance(a: &str, b: &str, max: usize) -> usize {
     prev[b.len()]
 }
 
-/// Up to three indexed words close to `term`: one letter off for words of 5-7 letters, two for longer ones; none for
-/// shorter words (too many false matches). The most frequent candidates win.
-fn nearest_terms(db: &Connection, term: &str) -> Vec<String> {
-    let len = term.chars().count();
-    let max = match len {
-        0..=4 => return Vec::new(),
-        5..=7 => 1,
-        _ => 2,
-    };
-    let Ok(mut st) = db.prepare_cached("SELECT term, doc FROM chunks_vocab WHERE length(term) BETWEEN ?1 AND ?2")
-    else {
-        return Vec::new();
-    };
-    let rows = st.query_map(params![(len - max) as i64, (len + max) as i64], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-    });
-    let mut found: Vec<(usize, i64, String)> = Vec::new();
-    if let Ok(rows) = rows {
-        for (cand, docs) in rows.flatten() {
-            let d = edit_distance(term, &cand, max);
-            if d <= max {
-                found.push((d, -docs, cand));
+/// The index's words, grouped by length, kept in memory so a misspelled word costs a few hundred distance checks, not a table scan.
+/// Rebuilt when another connection (the indexer) commits, detected with `PRAGMA data_version`.
+#[derive(Debug)]
+struct Vocab {
+    version: i64,
+    by_len: std::collections::HashMap<usize, Vec<(String, i64)>>,
+}
+
+impl Retriever {
+    /// Up to three indexed words close to `term`: one letter off for words of 5-7 letters, two for longer ones; none for
+    /// shorter words (too many false matches). The most frequent candidates win.
+    fn nearest_terms(&self, db: &Connection, term: &str) -> Vec<String> {
+        let len = term.chars().count();
+        let max = match len {
+            0..=4 => return Vec::new(),
+            5..=7 => 1,
+            _ => 2,
+        };
+        let version: i64 = db.query_row("PRAGMA data_version", [], |r| r.get(0)).unwrap_or(-1);
+        let mut cache = lock(&self.vocab);
+        if cache.as_ref().is_none_or(|v| v.version != version) {
+            let mut by_len: std::collections::HashMap<usize, Vec<(String, i64)>> = std::collections::HashMap::new();
+            if let Ok(mut st) = db.prepare("SELECT term, doc FROM chunks_vocab")
+                && let Ok(rows) = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            {
+                for (w, docs) in rows.flatten() {
+                    by_len.entry(w.chars().count()).or_default().push((w, docs));
+                }
+            }
+            *cache = Some(Vocab { version, by_len });
+        }
+        let Some(vocab) = cache.as_ref() else { return Vec::new() };
+        let mut found: Vec<(usize, i64, &str)> = Vec::new();
+        for l in len.saturating_sub(max)..=len + max {
+            for (cand, docs) in vocab.by_len.get(&l).into_iter().flatten() {
+                let d = edit_distance(term, cand, max);
+                if d <= max {
+                    found.push((d, -docs, cand));
+                }
             }
         }
+        found.sort_unstable();
+        found.into_iter().take(3).map(|f| f.2.to_owned()).collect()
     }
-    found.sort();
-    found.into_iter().take(3).map(|f| f.2).collect()
 }
 
 #[cfg(test)]

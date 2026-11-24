@@ -44,8 +44,9 @@ pub(crate) struct SearchArgs {
     /// Print JSON instead of text
     #[arg(long)]
     json: bool,
-    /// keyword (default), fuzzy (typo-tolerant keywords), dense (vectors only) or hybrid (keywords + vectors)
-    #[arg(long, default_value = "keyword")]
+    /// auto (default: typo-tolerant keywords, plus vectors when a real embedding service is configured), keyword (exact words
+    /// only), fuzzy, dense (vectors only) or hybrid (keywords + vectors)
+    #[arg(long, default_value = "auto")]
     mode: String,
     /// Act as this user or group when documents have access lists (repeatable)
     #[arg(long = "as")]
@@ -122,11 +123,15 @@ pub(crate) fn index(a: &IndexArgs) -> Result<ExitCode> {
 
 fn search_passages(a: &SearchArgs) -> Result<ExitCode> {
     let store = open_store()?;
+    // The built-in hashing embedder finds typos and word forms but ranks long passages poorly (measured: it lowers exact-query
+    // quality in hybrid mode), so `auto` only adds vectors when a real embedding service is configured.
+    let semantic = std::env::var("INTELLI_EMBED_URL").is_ok_and(|u| !u.is_empty());
     let (mode, fuzzy) = match a.mode.as_str() {
-        "fuzzy" => (Mode::Lexical, true),
+        "auto" if semantic => (Mode::Hybrid, true),
+        "auto" | "fuzzy" => (Mode::Lexical, true),
         m => (m.parse::<Mode>().map_err(anyhow::Error::msg)?, true),
     };
-    let r = retriever(&store, true)?;
+    let r = retriever(&store, mode != Mode::Lexical)?;
     let q = Query::new(&a.query).mode(mode).fuzzy(fuzzy).limit(a.limit).principals(a.principals.clone());
     let (out, evidence) = match a.context_tokens {
         Some(t) => r.context(&q, t, 2)?,
@@ -180,9 +185,13 @@ pub(crate) fn eval(a: &EvalArgs) -> Result<ExitCode> {
 }
 
 pub(crate) fn search(a: &SearchArgs) -> Result<ExitCode> {
-    if a.mode != "keyword" {
-        return search_passages(a);
+    if a.mode == "keyword" {
+        return search_keyword_only(a);
     }
+    search_passages(a)
+}
+
+fn search_keyword_only(a: &SearchArgs) -> Result<ExitCode> {
     let hits = open_store()?.search(&a.query, Some(a.limit), None)?;
     if a.json {
         println!("{}", serde_json::to_string_pretty(&hits)?);

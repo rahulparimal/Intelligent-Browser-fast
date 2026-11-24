@@ -3,6 +3,7 @@
 //! `IBOS_REQUIRE_BROWSER=1`.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +43,17 @@ async fn serve_site() -> (Arc<Site>, String) {
         .route("/submit", get(|State(s): State<Arc<Site>>, Query(q): Query<std::collections::HashMap<String, String>>| async move {
             s.submissions.lock().unwrap().push(q.get("email").cloned().unwrap_or_default());
             "ok"
+        }))
+        .route("/many", get(|| async {
+            let mut rows = String::new();
+            for i in 1..=20 {
+                let _ = write!(rows, "<li><span>Row {i}</span> <button onclick=\"document.getElementById('result').textContent='deleted {i}'\">Delete item {i}</button></li>");
+            }
+            Html(format!("<html><head><title>Many</title></head><body><h1>Items</h1><ul>{rows}</ul><div id=\"result\"></div></body></html>"))
+        }))
+        .route("/leave", get(|headers: axum::http::HeaderMap| async move {
+            let host = headers.get("host").and_then(|h| h.to_str().ok()).unwrap_or("127.0.0.1").replace("127.0.0.1", "localhost");
+            Html(format!("<html><head><title>Leave</title></head><body><a href=\"http://{host}/p/1\">Elsewhere</a></body></html>"))
         }))
         .route("/table", get(move || { let t = table.clone(); async move { Html(t) } }))
         .route("/products", get(move || { let p = products.clone(); async move { Html(p) } }))
@@ -375,4 +387,76 @@ async fn a_filtered_more_returns_the_whole_matching_row() {
     }));
     let r = Agent::new(page, llm, cfg(), deny()).run("how many leave days does Employee 45 have").await;
     assert!(r.success && r.answer.contains("days"), "{r:?}");
+}
+
+#[tokio::test]
+async fn a_risky_button_only_revealed_by_more_still_needs_approval() {
+    let Some((_b, page)) = browser().await else { return };
+    let (_site, base) = serve_site().await;
+    let url = format!("{base}/many");
+    let llm = Arc::new(FnLlm::new(move |req: &ChatRequest, n| match n {
+        0 => json!({"a": "go", "url": url}).to_string(),
+        1 => {
+            assert!(!req.prompt.tail.contains("Delete item 15"), "item 15 is collapsed at first:\n{}", req.prompt.tail);
+            json!({"a": "more", "h": handle(req, "+", "more similar items"), "q": "Delete item 15"}).to_string()
+        }
+        2 => {
+            let h = req
+                .prompt
+                .tail
+                .lines()
+                .find(|l| l.contains("<btn>") && l.ends_with("Delete item 15"))
+                .and_then(|l| l.strip_prefix('[')?.split_once(']')?.0.parse::<u32>().ok())
+                .expect("the hidden button is listed");
+            json!({"a": "click", "h": h}).to_string()
+        }
+        _ => {
+            assert!(req.prompt.tail.contains("Blocked by guardrail"), "{}", req.prompt.tail);
+            json!({"a": "done", "t": "stopped", "ok": true}).to_string()
+        }
+    }));
+    let report = Agent::new(page.clone(), llm, cfg(), deny()).run("delete item 15").await;
+    assert!(report.success && report.denied == 1, "{report:?}");
+    assert_eq!(
+        page.evaluate("document.getElementById('result').textContent").await.unwrap(),
+        json!(""),
+        "nothing was deleted"
+    );
+}
+
+#[tokio::test]
+async fn an_invented_handle_is_refused_and_nothing_is_clicked() {
+    let Some((_b, page)) = browser().await else { return };
+    let (_site, base) = serve_site().await;
+    let url = format!("{base}/");
+    let llm = Arc::new(FnLlm::new(move |req: &ChatRequest, n| match n {
+        0 => json!({"a": "go", "url": url}).to_string(),
+        1 => json!({"a": "click", "h": 987_654}).to_string(),
+        _ => {
+            assert!(req.prompt.tail.contains("does not exist"), "{}", req.prompt.tail);
+            json!({"a": "done", "t": "gave up", "ok": true}).to_string()
+        }
+    }));
+    let report = Agent::new(page.clone(), llm, cfg(), deny()).run("click something").await;
+    assert_eq!(report.denied, 1, "{report:?}");
+    assert_eq!(page.evaluate("document.getElementById('result').textContent").await.unwrap(), json!(""));
+}
+
+#[tokio::test]
+async fn a_link_that_leaves_the_allowed_sites_ends_on_a_blank_page() {
+    let Some((_b, page)) = browser().await else { return };
+    let (_site, base) = serve_site().await;
+    let url = format!("{base}/leave");
+    let llm = Arc::new(FnLlm::new(move |req: &ChatRequest, n| match n {
+        0 => json!({"a": "go", "url": url}).to_string(),
+        1 => json!({"a": "click", "h": handle(req, "a", "Elsewhere")}).to_string(),
+        _ => {
+            assert!(req.prompt.tail.contains("outside the allowed sites"), "{}", req.prompt.tail);
+            json!({"a": "done", "t": "stopped", "ok": true}).to_string()
+        }
+    }));
+    let guard = Guard::deny_risky(GuardConfig { allowed_domains: vec!["127.0.0.1".into()], ..GuardConfig::default() });
+    let report = Agent::new(page.clone(), llm, cfg(), guard).run("follow the link").await;
+    assert!(report.success, "{report:?}");
+    assert_eq!(page.url().await.unwrap(), "about:blank", "the agent did not stay on the other site");
 }

@@ -119,7 +119,21 @@ impl LiteStore {
     pub fn open(db_path: Option<&Path>, settings: Option<SettingsStore>) -> Result<Self, SearchError> {
         let path = db_path.map_or_else(default_db_path, Path::to_path_buf);
         if let Some(dir) = path.parent() {
+            let existed = dir.exists();
             std::fs::create_dir_all(dir)?;
+            #[cfg(unix)]
+            if !existed {
+                // a directory we create holds the full text of the user's documents: owner only
+                std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
+            }
+        }
+        #[cfg(unix)]
+        if !path.exists() {
+            // SQLite gives its -wal and -shm files the permissions of the database file
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+            let _ = opts.open(&path);
         }
         let settings = settings.unwrap_or_else(|| SettingsStore::open(path.with_file_name("settings.json")));
         let db = Connection::open(&path)?;
@@ -500,5 +514,29 @@ fn expand(p: &Path) -> PathBuf {
             .or_else(|| std::env::var_os("USERPROFILE"))
             .map_or_else(|| p.to_path_buf(), |h| PathBuf::from(h).join(rest)),
         None => p.to_path_buf(),
+    }
+}
+
+#[cfg(all(test, unix))]
+mod permission_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_new_index_is_private_to_the_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let db = data.join("idx.db");
+        let store = LiteStore::open(Some(&db), None).unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&data), 0o700, "directory");
+        assert_eq!(mode(&db), 0o600, "database");
+        store.stats().unwrap();
+        for ext in ["-wal", "-shm"] {
+            let side = PathBuf::from(format!("{}{ext}", db.display()));
+            if side.exists() {
+                assert_eq!(mode(&side), 0o600, "{ext}");
+            }
+        }
     }
 }

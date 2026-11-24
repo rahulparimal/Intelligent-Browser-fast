@@ -108,39 +108,39 @@ asks for them exactly, with a letter dropped or swapped, and with different word
 and probed by a caller without access. Relevant = the one document the words came from.
 
 ```text
-corpus: 3000 documents, 11000 passages; FTS5 index built in 1.36 s
-embedded 11000 passages (hashing, 384 dims, int8) in 1.22 s
+corpus: 3000 documents, 11000 passages; FTS5 index built in 2.99 s
+embedded 11000 passages (hashing, 384 dims, int8) in 3.09 s
 vector memory held: 4.2 MiB for 11000 vectors
 
 ### exact words (300 queries)
 
 | configuration | nDCG@10 | MRR | recall@10 | ACL leaks | p50 | p95 |
 |---|---|---|---|---|---|---|
-| keyword (BM25) | 1.000 | 1.000 | 1.000 | 0 | 0.60 ms | 0.89 ms |
-| keyword + fuzzy words | 1.000 | 1.000 | 1.000 | 0 | 0.71 ms | 0.90 ms |
-| dense (hashing) | 0.536 | 0.488 | 0.690 | 0 | 4.90 ms | 7.69 ms |
-| hybrid (RRF) | 0.982 | 0.975 | 1.000 | 0 | 5.15 ms | 5.57 ms |
-| hybrid + fuzzy + rerank | 1.000 | 1.000 | 1.000 | 0 | 5.74 ms | 6.18 ms |
+| keyword (BM25) | 1.000 | 1.000 | 1.000 | 0 | 0.87 ms | 1.45 ms |
+| keyword + fuzzy words | 1.000 | 1.000 | 1.000 | 0 | 1.00 ms | 1.85 ms |
+| dense (hashing) | 0.536 | 0.488 | 0.690 | 0 | 7.69 ms | 10.45 ms |
+| hybrid (RRF) | 0.982 | 0.975 | 1.000 | 0 | 7.29 ms | 9.60 ms |
+| hybrid + fuzzy + rerank | 1.000 | 1.000 | 1.000 | 0 | 9.65 ms | 14.10 ms |
 
 ### typos (one letter dropped or swapped per word) (300 queries)
 
 | configuration | nDCG@10 | MRR | recall@10 | ACL leaks | p50 | p95 |
 |---|---|---|---|---|---|---|
-| keyword (BM25) | 0.003 | 0.003 | 0.003 | 0 | 0.57 ms | 0.64 ms |
-| keyword + fuzzy words | 0.987 | 0.983 | 0.997 | 0 | 30.30 ms | 41.26 ms |
-| dense (hashing) | 0.024 | 0.016 | 0.050 | 0 | 4.94 ms | 7.54 ms |
-| hybrid (RRF) | 0.027 | 0.020 | 0.053 | 0 | 5.16 ms | 5.78 ms |
-| hybrid + fuzzy + rerank | 0.928 | 0.906 | 0.993 | 0 | 34.83 ms | 53.63 ms |
+| keyword (BM25) | 0.003 | 0.003 | 0.003 | 0 | 0.93 ms | 1.96 ms |
+| keyword + fuzzy words | 0.987 | 0.983 | 0.997 | 0 | 10.68 ms | 16.02 ms |
+| dense (hashing) | 0.024 | 0.016 | 0.050 | 0 | 6.69 ms | 9.09 ms |
+| hybrid (RRF) | 0.027 | 0.020 | 0.053 | 0 | 7.40 ms | 10.25 ms |
+| hybrid + fuzzy + rerank | 0.928 | 0.906 | 0.993 | 0 | 18.22 ms | 27.21 ms |
 
 ### different word endings (300 queries)
 
 | configuration | nDCG@10 | MRR | recall@10 | ACL leaks | p50 | p95 |
 |---|---|---|---|---|---|---|
-| keyword (BM25) | 1.000 | 1.000 | 1.000 | 0 | 0.60 ms | 0.67 ms |
-| keyword + fuzzy words | 1.000 | 1.000 | 1.000 | 0 | 0.68 ms | 0.75 ms |
-| dense (hashing) | 0.536 | 0.488 | 0.690 | 0 | 4.96 ms | 5.83 ms |
-| hybrid (RRF) | 0.982 | 0.975 | 1.000 | 0 | 5.16 ms | 5.43 ms |
-| hybrid + fuzzy + rerank | 1.000 | 1.000 | 1.000 | 0 | 5.75 ms | 6.22 ms |
+| keyword (BM25) | 1.000 | 1.000 | 1.000 | 0 | 0.90 ms | 1.21 ms |
+| keyword + fuzzy words | 1.000 | 1.000 | 1.000 | 0 | 1.04 ms | 1.51 ms |
+| dense (hashing) | 0.536 | 0.488 | 0.690 | 0 | 6.46 ms | 8.43 ms |
+| hybrid (RRF) | 0.982 | 0.975 | 1.000 | 0 | 6.95 ms | 9.57 ms |
+| hybrid + fuzzy + rerank | 1.000 | 1.000 | 1.000 | 0 | 7.63 ms | 9.66 ms |
 
 ### access control: 200 probes for restricted documents by a caller without access
 
@@ -152,14 +152,21 @@ vector memory held: 4.2 MiB for 11000 vectors
 ```
 
 How to read this:
-- **Typos:** fuzzy words take keyword search from 0.3% to 99.7% recall. This is the real gain, and it costs about 30 ms per
-  query here because each misspelled word scans the vocabulary (11,000 passages, many unique words).
+- **Typos:** fuzzy words take keyword search from 0.3% to 99.7% recall. This is the real gain. It costs about 10 ms per query here (it was about 30 ms before the vocabulary was cached in memory; the target is under 5 ms).
 - **Dense search with the built-in hashing embedder is weak on long passages** (0.54 nDCG@10 on exact words): 60 common
   words per paragraph drown three key words. Hybrid fusion therefore slightly *hurts* exact queries (0.982 vs 1.000) until the
   reranker restores them (1.000), and it does not beat keyword + fuzzy on typos (0.928 vs 0.987).
 - **No access-control leaks** in any mode across 200 probes (also covered by unit tests).
 - **Not measured:** synonyms, paraphrase, real embedding models, real documents, corpora beyond 11,000 passages.
   Expect a real embedder to change the dense and hybrid rows; do not infer them from these.
+
+## Why these search numbers are weak evidence
+
+Review found that this benchmark cannot tell good ranking from bad: queries are random nonsense syllables that also appear in the
+document title, so keyword search is trivially perfect; "different word endings" is solved by the FTS5 stemmer, not by anything
+added here; and nonsense words hide the real failure mode of fuzzy matching (in English, one edit away often reaches another real
+word). Treat the typo result as "fuzzy works on typos of rare words", not as a quality claim. A real judged corpus is the first
+item in [`../ROADMAP.md`](../ROADMAP.md).
 
 ## Not measured
 

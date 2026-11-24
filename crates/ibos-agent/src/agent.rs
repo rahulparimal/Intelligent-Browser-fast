@@ -268,11 +268,15 @@ impl Agent {
                 return report(steps, ctx.usage().clone(), &self.guard, StopReason::Done, t, *ok);
             }
 
-            let element = match &action {
-                Action::Click { h } | Action::Type { h, .. } => shown.get(h).map(String::as_str),
+            // Name the target from what was shown; if it was not shown (revealed through `more`, say), look it up in the
+            // full page. A handle that exists nowhere stays `None`, and the guard refuses it.
+            let element: Option<String> = match &action {
+                Action::Click { h } | Action::Type { h, .. } => {
+                    shown.get(h).cloned().or_else(|| Self::lookup_full(&obs, *h, &arena))
+                }
                 _ => None,
             };
-            let verdict = self.guard.check_action(&action, element);
+            let verdict = self.guard.check_action(&action, element.as_deref());
             let outcome = match verdict {
                 Verdict::Deny(reason) => {
                     self.guard.audit(n, &json!({"action": log.action, "decision": "denied", "reason": reason}));
@@ -305,6 +309,18 @@ impl Agent {
         report(steps, ctx.usage().clone(), &self.guard, StopReason::MaxSteps, "", false)
     }
 
+    /// "role text" of element `h` in the full, uncollapsed page, if it exists.
+    fn lookup_full(obs: &RawObservation, h: u32, arena: &StepArena) -> Option<String> {
+        let opts = DistillOptions {
+            keep_repeat: usize::MAX,
+            include_offscreen: true,
+            max_elements: usize::MAX,
+            ..DistillOptions::default()
+        };
+        let full = Self::distil(obs, arena, &opts).ok()?;
+        full.snapshot.elems.iter().find(|(eh, _)| *eh == h).map(|(_, e)| format!("{} {}", e.role, e.text))
+    }
+
     fn distil(obs: &RawObservation, arena: &StepArena, opts: &DistillOptions) -> Result<Distilled, String> {
         distill(
             &obs.url,
@@ -316,6 +332,20 @@ impl Agent {
             arena,
         )
         .map_err(|e| e.to_string())
+    }
+
+    /// After any action that can navigate, make sure the browser is still on an allowed site; if not, reset it to a blank page.
+    async fn enforce_origin(&self, outcome: &str) -> String {
+        let now = self.page.url().await.unwrap_or_default();
+        if !now.is_empty()
+            && let Err(reason) = self.guard.check_navigation(&now)
+        {
+            let _ = self.page.navigate("about:blank").await;
+            return format!(
+                "Blocked by guardrail: the page moved outside the allowed sites ({reason}); the browser was reset to a blank page."
+            );
+        }
+        outcome.to_owned()
     }
 
     async fn execute(
@@ -341,7 +371,7 @@ impl Agent {
             Action::Click { h } => {
                 self.page.click(i64::from(*h)).await?;
                 self.settle().await;
-                Ok("clicked".into())
+                Ok(self.enforce_origin("clicked").await)
             }
             Action::Type { h, t, clear } => {
                 self.page.type_text(i64::from(*h), t, *clear).await?;
@@ -356,7 +386,7 @@ impl Agent {
             Action::Back => {
                 self.page.evaluate("history.back()").await?;
                 self.settle().await;
-                Ok("went back".into())
+                Ok(self.enforce_origin("went back").await)
             }
             Action::More { h, q, skip, n, ctx } => {
                 let (listed, count) = self.expand(

@@ -1,5 +1,7 @@
 # Roadmap
 
+> The prioritized, reviewed list is [`docs/RECOMMENDATIONS.md`](docs/RECOMMENDATIONS.md). This page is the short version.
+
 Everything below is **planned, not built**, unless marked done. Order is a proposal; change it.
 
 ## Done
@@ -27,7 +29,7 @@ Everything below is **planned, not built**, unless marked done. Order is a propo
 ## Next: search
 | Feature | What it gives you |
 |---|---|
-| **Qdrant backend (optional)** | Vectors behind a trait; built-in store stays the default, Qdrant for team servers and millions of passages |
+| **sqlite-vec / approximate index** (replaces the earlier Qdrant idea) | Only past about 200,000 passages; keeps one file and access-lists-before-ranking |
 | **Hybrid search in the web UI** | Mode switch, access-list editor, "embed" button in the admin page |
 | **Faster typo matching** | Cached vocabulary or trigram index: under 5 ms instead of about 30 ms |
 | **More formats** | pptx, xlsx, email, images with OCR |

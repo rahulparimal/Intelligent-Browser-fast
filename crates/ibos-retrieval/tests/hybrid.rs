@@ -366,3 +366,18 @@ fn with_a_meaningful_embedder_a_query_sharing_no_words_still_finds_the_document(
     let o = r.search(&Query::new(q).mode(Mode::Hybrid)).unwrap();
     assert!(paths(&o)[0].contains("refund") || paths(&o)[0] == "copy.txt");
 }
+
+#[test]
+fn the_fuzzy_vocabulary_follows_the_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = corpus(dir.path());
+    let r = Retriever::open(&store, None, MemoryBudget::new(1 << 20, 1 << 24)).unwrap();
+    let lexical = |q: &str| paths(&r.search(&Query::new(q).mode(Mode::Lexical)).unwrap());
+    assert_eq!(lexical("invoise paymnt")[0], "invoicing.txt", "builds the vocabulary cache");
+    assert!(lexical("zebrafsh migration").is_empty(), "the word does not exist yet");
+    let docs = dir.path().join("docs");
+    std::fs::write(docs.join("fish.txt"), "Zebrafish migration\n\nZebrafish migration patterns in the river delta.")
+        .unwrap();
+    store.index_path(&docs, IndexOptions::default(), None).unwrap();
+    assert_eq!(lexical("zebrafsh migration")[0], "fish.txt", "a stale cache would miss the new word");
+}

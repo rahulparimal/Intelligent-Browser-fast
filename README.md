@@ -6,10 +6,12 @@ A fast, local browser agent and document search engine in Rust. One 15 MB execut
 - **Hybrid document search**: keyword (BM25) plus vectors, typo tolerance, per-document access control, answer checking.
 - **Local first**: the index is one SQLite file on your machine. Only what you configure (a model endpoint, an embedding endpoint) leaves it.
 
-> **Status: working prototype, tested on Linux.** 227 tests pass. Benchmarks use a scripted model and synthetic documents, so
+> **Status: working prototype, tested on Linux.** 235 tests pass. Benchmarks use a scripted model and synthetic documents, so
 > real-model success, real-embedding quality, and Windows and macOS are **not measured**. See [Honest limits](#honest-limits).
 
 ## What the measurements show
+
+> These use a **scripted** model and **synthetic** documents. They show what the agent controls (what it sends, how many calls), not how well a real model performs. A real-model benchmark against browser-use and Playwright MCP is the top item in [`docs/RECOMMENDATIONS.md`](docs/RECOMMENDATIONS.md).
 
 | | Python agent | This (Rust) |
 |---|---|---|
@@ -17,7 +19,7 @@ A fast, local browser agent and document search engine in Rust. One 15 MB execut
 | Wall time, same tasks | 13.8 s | **2.3 s** (6.1x faster) |
 | System prompt | 6,022 tokens | **242 tokens** |
 | Typo queries, recall@10 (11,000 passages) | 0.3% | **99.7%** (fuzzy words) |
-| Access-control leaks in 200 probes | n/a | **0** |
+| Access-control leaks in 200 probes (search library only; the web UI does not enforce access lists yet) | n/a | **0** |
 
 Method and caveats: [`bench/RESULTS.md`](bench/RESULTS.md). The scripted-model comparison isolates what the agent controls; it
 does not show how a real model performs.
@@ -28,6 +30,7 @@ does not show how a real model performs.
 cargo build --release                      # about 2 minutes; produces target/release/intelli-rust
 
 intelli-rust index ~/Documents --embed                     # index files and compute vectors
+intelli-rust search "invoise paymnt"                       # auto: typo-tolerant keywords (+ vectors if a real embedder is set)
 intelli-rust search "invoise paymnt" --mode hybrid          # keyword | fuzzy | dense | hybrid
 intelli-rust search "refund rules" --mode hybrid --as hr --context-tokens 800
 intelli-rust eval judgments.json                            # compare modes on your own judged queries
@@ -102,6 +105,8 @@ Reproduce the benchmarks: `cargo run --release -p ibos-retrieval --example bench
 set `IBOS_PY_REPO` to the Python project and run `python3 bench/agent_bench.py --runs 10` then `python3 bench/summarize.py`.
 
 ## Honest limits
+
+- **Known security gaps** (found in review, see [`docs/RECOMMENDATIONS.md`](docs/RECOMMENDATIONS.md)): the web UI ignores document access lists and has no authentication; DevTools listens on a loopback port; `--no-sandbox` is used when running as root; document extraction is not sandboxed; the allow-list is checked on navigation but not on sub-requests. Fixed in phase 1: the risky-click guard failing open, the card-check bypass, typed secrets reaching the model, file permissions, and a saved API key following a changed endpoint.
 
 - Agent benchmark uses a scripted model: no real-model success rate or cost yet.
 - No real embedding model was tested; the vector leg with the built-in embedder is weak on long passages. Hybrid did not beat keyword plus fuzzy in the synthetic test.

@@ -161,6 +161,14 @@ impl SettingsStore {
         let mut guard = self.current.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut merged = serde_json::to_value(&*guard).map_err(|e| SettingsError::Invalid(e.to_string()))?;
         let obj = merged.as_object_mut().ok_or_else(|| SettingsError::Invalid("internal".into()))?;
+        // A saved key belongs to the endpoint it was saved for. Pointing the app at a different endpoint without supplying a new
+        // key must not send the old key there.
+        let endpoint_changed = changes
+            .get("llm_base_url")
+            .and_then(Value::as_str)
+            .is_some_and(|u| obj.get("llm_base_url").and_then(Value::as_str) != Some(u));
+        let new_key = changes.get("llm_api_key").and_then(Value::as_str).is_some_and(|k| !k.is_empty());
+        let clear_api_key = clear_api_key || (endpoint_changed && !new_key);
         for (k, v) in changes {
             if !obj.contains_key(k) || (k == "llm_api_key" && v.as_str().is_none_or(str::is_empty)) {
                 continue;
@@ -282,6 +290,26 @@ mod tests {
             .unwrap()
             .answers_enabled
         );
+    }
+
+    #[test]
+    fn a_saved_key_does_not_follow_a_changed_endpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = SettingsStore::open(dir.path().join("s.json"));
+        s.update(
+            &obj(&json!({"llm_api_key": "sk-secret-123", "llm_base_url": "https://good.test/v1", "llm_model": "m"})),
+            false,
+        )
+        .unwrap();
+        // same endpoint: the key stays
+        s.update(&obj(&json!({"llm_base_url": "https://good.test/v1", "llm_model": "m2"})), false).unwrap();
+        assert_eq!(s.get().llm_api_key, "sk-secret-123");
+        // different endpoint, no new key: the old key is dropped, never sent to the new host
+        s.update(&obj(&json!({"llm_base_url": "https://evil.test/v1"})), false).unwrap();
+        assert_eq!(s.get().llm_api_key, "");
+        // different endpoint with a new key: that key is kept
+        s.update(&obj(&json!({"llm_base_url": "https://other.test/v1", "llm_api_key": "sk-new"})), false).unwrap();
+        assert_eq!(s.get().llm_api_key, "sk-new");
     }
 
     #[test]

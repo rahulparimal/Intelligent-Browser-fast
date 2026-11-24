@@ -401,3 +401,23 @@ fn handles_are_stable_browser_ids_usable_for_actions() {
     assert_eq!(go, 30, "the handle is the DOM backend node id the CDP click uses");
     let _ = (Snapshot::default(), String::new().write_str(""));
 }
+
+#[test]
+fn secrets_typed_into_fields_never_reach_the_model() {
+    let tree = [
+        root(&[1, 2, 3, 4, 5, 6]),
+        n(1, "textbox", "Password", &[]).value("hunter2"),
+        n(2, "textbox", "Card number", &[]).value("4242 4242 4242 4242"),
+        n(3, "textbox", "Notes", &[]).value("4111-1111-1111-1111"),
+        n(4, "textbox", "Search", &[]).value("cheap flights"),
+        n(5, "textbox", "Order number", &[]).value("12345"),
+        n(6, "textbox", "Enter PIN", &[]).value("9876"),
+    ];
+    let d = run(&ax(&tree), None, &DistillOptions::default());
+    let text = render_full(&d.snapshot);
+    for secret in ["hunter2", "4242", "4111", "9876"] {
+        assert!(!text.contains(secret), "{secret} leaked:\n{text}");
+    }
+    assert!(text.contains("cheap flights") && text.contains("12345"), "ordinary values stay visible:\n{text}");
+    assert_eq!(text.matches("[hidden]").count(), 4, "{text}");
+}

@@ -160,7 +160,12 @@ fn describe(n: &AxNode<'_>, class: Class, opts: &DistillOptions) -> Option<(Stri
                 if !text.is_empty() {
                     text.push(' ');
                 }
-                let _ = write!(text, "= \"{}\"", clip(value, 60));
+                if role == "input" && sensitive_field(n.name(), value) {
+                    // what the user typed here (a password, a card number) must never reach the model
+                    text.push_str("= [hidden]");
+                } else {
+                    let _ = write!(text, "= \"{}\"", clip(value, 60));
+                }
             }
             text.push_str(&state_flags(n));
             Some((role.to_owned(), text))
@@ -424,4 +429,63 @@ fn mark_visited(root: usize, kids: &[&[usize]], visited: &mut [bool]) {
             stack.extend(kids[i].iter());
         }
     }
+}
+
+/// Words in a field's label that mark its content as secret.
+const SECRET_LABELS: &[&str] = &[
+    "password",
+    "passcode",
+    "passwd",
+    "card number",
+    "credit card",
+    "debit card",
+    "cvv",
+    "cvc",
+    "security code",
+    "ssn",
+    "social security",
+    "iban",
+    "account number",
+    "routing number",
+    "pin code",
+    "secret",
+    "token",
+    "api key",
+];
+
+/// True if an input's value should be hidden from the model: its label names a secret, the value is only bullets, or the value
+/// is a payment card number (Luhn-valid, 13 to 19 digits).
+fn sensitive_field(label: &str, value: &str) -> bool {
+    let label = label.to_lowercase();
+    if SECRET_LABELS.iter().any(|w| label.contains(w))
+        || label.split(|c: char| !c.is_alphanumeric()).any(|w| w == "pin")
+    {
+        return true;
+    }
+    if !value.is_empty() && value.chars().all(|c| matches!(c, '\u{2022}' | '*' | '\u{25cf}')) {
+        return true;
+    }
+    let digits: Vec<u32> = value
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-'))
+        .map(|c| c.to_digit(10))
+        .collect::<Option<_>>()
+        .unwrap_or_default();
+    if !(13..=19).contains(&digits.len()) {
+        return false;
+    }
+    let sum: u32 = digits
+        .iter()
+        .rev()
+        .enumerate()
+        .map(|(i, d)| {
+            if i % 2 == 1 {
+                let x = d * 2;
+                if x > 9 { x - 9 } else { x }
+            } else {
+                *d
+            }
+        })
+        .sum();
+    sum.is_multiple_of(10)
 }

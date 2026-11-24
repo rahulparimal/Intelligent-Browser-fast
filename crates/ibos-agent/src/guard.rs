@@ -179,7 +179,11 @@ impl Guard {
             if let Some(dir) = p.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            OpenOptions::new().create(true).append(true).open(p).ok()
+            let mut opts = OpenOptions::new();
+            opts.create(true).append(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600); // the log can name sites and actions: owner only
+            opts.open(p).ok()
         });
         Self { cfg, confirm, denied: AtomicUsize::new(0), audit: Mutex::new(audit) }
     }
@@ -209,7 +213,7 @@ impl Guard {
                     )
                 })
             }
-            Action::Type { t, .. } if !t.contains("<secret>") && has_card_number(t) => {
+            Action::Type { t, .. } if has_card_number(t) => {
                 Some("types something that looks like a payment card number".into())
             }
             _ => None,
@@ -222,6 +226,15 @@ impl Guard {
         {
             self.denied.fetch_add(1, Ordering::Relaxed);
             return Verdict::Deny(format!("Blocked by guardrail: {reason}."));
+        }
+        // Fail closed: a click or typing target the agent never saw (an invented or stale handle) cannot be risk-checked.
+        if let Action::Click { h } | Action::Type { h, .. } = action
+            && element_text.is_none()
+        {
+            self.denied.fetch_add(1, Ordering::Relaxed);
+            return Verdict::Deny(format!(
+                "Blocked by guardrail: element {h} does not exist on this page. Use handles exactly as shown."
+            ));
         }
         let Some(reason) = Self::risk(action, element_text).filter(|_| self.cfg.confirm_mode == ConfirmMode::Risky)
         else {
@@ -301,7 +314,14 @@ mod tests {
                 "{safe}"
             );
         }
-        assert_eq!(guard(&[], &[], false).check_action(&click, None), Verdict::Allow { approved: false });
+        assert!(
+            matches!(guard(&[], &[], false).check_action(&click, None), Verdict::Deny(_)),
+            "an element nobody has seen is refused, not allowed"
+        );
+        assert!(
+            matches!(guard(&[], &[], true).check_action(&click, None), Verdict::Deny(_)),
+            "approval cannot rescue a handle that does not exist"
+        );
     }
 
     #[test]
@@ -314,9 +334,15 @@ mod tests {
         assert!(!has_card_number("4242 4242 4242 4241"), "fails Luhn: not a card");
         assert!(!has_card_number("order 12345") && !has_card_number("") && !has_card_number("+1 555 123 4567"));
         let typed = Action::Type { h: 1, t: "4242 4242 4242 4242".into(), clear: true };
-        assert!(matches!(guard(&[], &[], false).check_action(&typed, None), Verdict::Deny(_)));
-        let placeholder = Action::Type { h: 1, t: "<secret>card</secret>".into(), clear: true };
-        assert_eq!(guard(&[], &[], false).check_action(&placeholder, None), Verdict::Allow { approved: false });
+        assert!(matches!(guard(&[], &[], false).check_action(&typed, Some("input card")), Verdict::Deny(_)));
+        // the old "<secret>" prefix exemption was a bypass: nothing substitutes it, so it must not skip the card check
+        let smuggled = Action::Type { h: 1, t: "<secret> 4242 4242 4242 4242".into(), clear: true };
+        assert!(matches!(guard(&[], &[], false).check_action(&smuggled, Some("input card")), Verdict::Deny(_)));
+        let harmless = Action::Type { h: 1, t: "hello".into(), clear: true };
+        assert_eq!(
+            guard(&[], &[], false).check_action(&harmless, Some("input name")),
+            Verdict::Allow { approved: false }
+        );
     }
 
     #[test]
@@ -332,6 +358,17 @@ mod tests {
         assert_eq!(g.check_action(&Action::Click { h: 1 }, Some("Place order")), Verdict::Allow { approved: false });
         assert!(matches!(g.check_action(&Action::Go { url: "https://other.test".into() }, None), Verdict::Deny(_)));
         assert_eq!(g.denied(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_log_is_private_to_the_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("a.jsonl");
+        let g = Guard::deny_risky(GuardConfig { audit_path: Some(p.clone()), ..GuardConfig::default() });
+        g.audit(1, &json!({"action": "click 4"}));
+        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]
