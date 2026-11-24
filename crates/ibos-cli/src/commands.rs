@@ -99,7 +99,12 @@ fn retriever(store: &LiteStore, with_embedder: bool) -> Result<Retriever> {
 }
 
 fn open_store() -> Result<Arc<LiteStore>> {
-    Ok(Arc::new(LiteStore::open(None, None).context("could not open the search index")?))
+    let store = Arc::new(LiteStore::open(None, None).context("could not open the search index")?);
+    // Documents are untrusted input: read them in a restricted worker process, unless that is switched off for debugging.
+    if std::env::var("INTELLI_NO_EXTRACT_SANDBOX").is_err_and(|_| true) {
+        store.set_sandbox(ibos_search::sandbox::Sandbox::current_exe().ok());
+    }
+    Ok(store)
 }
 
 pub(crate) async fn ui(a: UiArgs, path: &str) -> Result<ExitCode> {

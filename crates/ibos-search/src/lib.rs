@@ -9,6 +9,7 @@
 pub mod acl;
 pub mod extract;
 pub mod paths;
+pub mod sandbox;
 pub mod settings;
 mod store;
 pub mod text;

@@ -103,6 +103,8 @@ pub struct LiteStore {
     path: PathBuf,
     db: Mutex<Connection>,
     settings: SettingsStore,
+    /// When set, documents are read in a restricted worker process instead of in this one.
+    sandbox: Mutex<Option<crate::sandbox::Sandbox>>,
 }
 
 type Progress<'a> = Option<&'a (dyn Fn(usize, usize) + Sync)>;
@@ -140,9 +142,14 @@ impl LiteStore {
         let db = Connection::open(&path)?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         db.busy_timeout(std::time::Duration::from_secs(5))?;
-        let store = Self { path, db: Mutex::new(db), settings };
+        let store = Self { path, db: Mutex::new(db), settings, sandbox: Mutex::new(None) };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// Read documents in restricted worker processes from now on (see [`crate::sandbox`]); `None` reads them in this process.
+    pub fn set_sandbox(&self, sandbox: Option<crate::sandbox::Sandbox>) {
+        *self.sandbox.lock().unwrap_or_else(PoisonError::into_inner) = sandbox;
     }
 
     fn conn(&self) -> MutexGuard<'_, Connection> {
@@ -265,7 +272,12 @@ impl LiteStore {
         if !force && existing.as_ref().is_some_and(|(_, s)| *s == sha) {
             return Ok(FileResult::Unchanged);
         }
-        let (title, pages) = extract(f)?; // parsing happens outside the lock: it can be slow
+        // parsing happens outside the database lock: it can be slow
+        let sandbox = self.sandbox.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let (title, pages) = match sandbox {
+            Some(sb) => sb.extract(f)?,
+            None => extract(f)?,
+        };
         let size = usize::try_from(cfg.chunk_chars).unwrap_or(900);
         let pieces: Vec<(usize, String)> =
             pages.iter().enumerate().flat_map(|(n, p)| chunk(p, size).into_iter().map(move |c| (n + 1, c))).collect();

@@ -38,6 +38,25 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // Hidden worker commands: run before anything else (no async runtime, no threads) so the worker can restrict itself.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.as_slice() {
+        [cmd, file] if cmd == ibos_search::sandbox::WORKER_COMMAND => {
+            return ExitCode::from(
+                u8::try_from(ibos_search::sandbox::worker_main(std::path::Path::new(file))).unwrap_or(2),
+            );
+        }
+        [cmd, file] if cmd == "__sandbox-selftest" => {
+            let (applied, other_file_readable, tcp_allowed) =
+                ibos_search::sandbox::self_test(std::path::Path::new(file));
+            println!(
+                "{}",
+                serde_json::json!({"applied": applied, "other_file_readable": other_file_readable, "tcp_allowed": tcp_allowed})
+            );
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("INTELLI_LOG")
