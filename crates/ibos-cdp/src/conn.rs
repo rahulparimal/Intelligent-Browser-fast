@@ -17,6 +17,9 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
 use crate::error::CdpError;
 
+/// Largest single protocol message accepted over a pipe (matches the WebSocket limit).
+const MAX_PIPE_MESSAGE: usize = 256 << 20;
+
 type Reply = Result<Box<RawValue>, CdpError>;
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Reply>>>>;
 
@@ -87,10 +90,7 @@ impl Conn {
                 .map_err(|e| CdpError::Connect(e.to_string()))?;
         let (mut sink, mut stream) = ws.split();
         let (tx, mut rx) = mpsc::channel::<String>(64);
-        let (events, _) = broadcast::channel(1024);
-        let pending: Pending = Arc::default();
-        let closed = Arc::new(AtomicBool::new(false));
-
+        let (inbound_tx, inbound_rx) = mpsc::channel::<String>(256);
         let writer = tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 if sink.send(Message::text(msg)).await.is_err() {
@@ -98,15 +98,80 @@ impl Conn {
                 }
             }
         });
-        let (p, ev, flag) = (Arc::clone(&pending), events.clone(), Arc::clone(&closed));
         let reader = tokio::spawn(async move {
             while let Some(Ok(msg)) = stream.next().await {
-                let Message::Text(text) = msg else {
-                    if matches!(msg, Message::Close(_)) {
-                        break;
+                match msg {
+                    Message::Text(text) => {
+                        if inbound_tx.send(text.as_str().to_owned()).await.is_err() {
+                            break;
+                        }
                     }
-                    continue;
-                };
+                    Message::Close(_) => break,
+                    _ => {}
+                }
+            }
+        });
+        Ok(Self::assemble(timeout, tx, inbound_rx, vec![writer, reader]))
+    }
+
+    /// Talk DevTools over a pair of byte streams, as Chromium's `--remote-debugging-pipe` does: each message is one JSON
+    /// document followed by a NUL byte. There is no TCP port, so no other program can attach to the browser.
+    pub fn over_pipe<R, W>(read: R, write: W, timeout: Duration) -> Self
+    where
+        R: tokio::io::AsyncRead + Send + Unpin + 'static,
+        W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (tx, mut rx) = mpsc::channel::<String>(64);
+        let (inbound_tx, inbound_rx) = mpsc::channel::<String>(256);
+        let mut write = write;
+        let writer = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                if write.write_all(msg.as_bytes()).await.is_err()
+                    || write.write_all(&[0]).await.is_err()
+                    || write.flush().await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let mut reader = tokio::io::BufReader::with_capacity(1 << 16, read);
+        let reader = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match reader.read_until(0, &mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if buf.last() == Some(&0) {
+                            buf.pop();
+                        }
+                        if buf.len() > MAX_PIPE_MESSAGE {
+                            continue; // an absurdly large message is dropped, not buffered forever
+                        }
+                        if inbound_tx.send(String::from_utf8_lossy(&buf).into_owned()).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Self::assemble(timeout, tx, inbound_rx, vec![writer, reader])
+    }
+
+    /// Shared half: dispatch incoming messages to waiting callers and event subscribers.
+    fn assemble(
+        timeout: Duration,
+        tx: mpsc::Sender<String>,
+        mut inbound: mpsc::Receiver<String>,
+        mut tasks: Vec<JoinHandle<()>>,
+    ) -> Self {
+        let (events, _) = broadcast::channel(1024);
+        let pending: Pending = Arc::default();
+        let closed = Arc::new(AtomicBool::new(false));
+        let (p, ev, flag) = (Arc::clone(&pending), events.clone(), Arc::clone(&closed));
+        tasks.push(tokio::spawn(async move {
+            while let Some(text) = inbound.recv().await {
                 let Ok(inc) = serde_json::from_str::<Incoming<'_>>(&text) else { continue };
                 match (inc.id, inc.method) {
                     (Some(id), _) => {
@@ -135,10 +200,10 @@ impl Conn {
             }
             flag.store(true, Ordering::SeqCst); // set before draining: later calls see it, earlier ones are drained below
             for (_, waiter) in lock(&p).drain() {
-                let _ = waiter.send(Err(CdpError::Closed)); // the socket is gone: nobody waits forever
+                let _ = waiter.send(Err(CdpError::Closed)); // the connection is gone: nobody waits forever
             }
-        });
-        Ok(Self { tx, pending, next_id: AtomicU64::new(1), events, closed, timeout, tasks: vec![writer, reader] })
+        }));
+        Self { tx, pending, next_id: AtomicU64::new(1), events, closed, timeout, tasks }
     }
 
     /// Subscribe to events. A slow subscriber loses old events rather than growing memory.
@@ -299,5 +364,48 @@ mod tests {
     async fn connecting_to_nothing_is_an_error() {
         let e = Conn::connect("ws://127.0.0.1:9", Duration::from_secs(2)).await.unwrap_err();
         assert!(matches!(e, CdpError::Connect(_) | CdpError::Timeout(..)));
+    }
+
+    #[tokio::test]
+    async fn pipe_transport_frames_messages_with_nul_bytes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (client_side, mut chrome_side) = tokio::io::duplex(1 << 16);
+        let (r, w) = tokio::io::split(client_side);
+        let c = Conn::over_pipe(r, w, Duration::from_secs(5));
+        let mut sub = c.subscribe();
+        let fake = tokio::spawn(async move {
+            // read one NUL-terminated request, answer it and emit an event in the same write
+            let mut got = Vec::new();
+            let mut byte = [0_u8; 1];
+            while chrome_side.read_exact(&mut byte).await.is_ok() {
+                if byte[0] == 0 {
+                    break;
+                }
+                got.push(byte[0]);
+            }
+            let req: Value = serde_json::from_slice(&got).unwrap();
+            let reply = format!(
+                "{}\0{}\0",
+                json!({"method": "Page.loadEventFired", "params": {"timestamp": 2.5}}),
+                json!({"id": req["id"], "result": {"echo": req["method"]}})
+            );
+            chrome_side.write_all(reply.as_bytes()).await.unwrap();
+            chrome_side
+        });
+        let out = c.call("Browser.getVersion", json!({}), None).await.unwrap();
+        assert_eq!(out, json!({"echo": "Browser.getVersion"}));
+        let ev = tokio::time::timeout(Duration::from_secs(2), sub.recv()).await.unwrap().unwrap();
+        assert_eq!(ev.method, "Page.loadEventFired");
+        let _keep_open = fake.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pipe_closing_fails_waiting_calls() {
+        let (client_side, chrome_side) = tokio::io::duplex(1 << 16);
+        let (r, w) = tokio::io::split(client_side);
+        let c = Conn::over_pipe(r, w, Duration::from_secs(10));
+        drop(chrome_side);
+        let e = c.call("X.y", json!({}), None).await.unwrap_err();
+        assert!(matches!(e, CdpError::Closed), "{e}");
     }
 }

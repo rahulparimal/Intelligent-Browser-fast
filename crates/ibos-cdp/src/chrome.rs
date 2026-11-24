@@ -85,11 +85,8 @@ pub fn find_browser() -> Option<PathBuf> {
     })
 }
 
-/// True when running as root on Linux, where Chromium refuses to start with its sandbox.
-pub(crate) fn needs_no_sandbox() -> bool {
-    if std::env::var_os("INTELLI_NO_SANDBOX").is_some_and(|v| v == "1") {
-        return true;
-    }
+/// True when the process runs as root on Linux, where Chromium refuses to start with its sandbox.
+pub(crate) fn running_as_root() -> bool {
     std::fs::read_to_string("/proc/self/status")
         .is_ok_and(|s| s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0")))
 }

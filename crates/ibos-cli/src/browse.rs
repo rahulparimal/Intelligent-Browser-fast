@@ -47,6 +47,9 @@ pub(crate) struct RunArgs {
     /// Where to write the audit log (default: the config directory)
     #[arg(long)]
     audit_log: Option<PathBuf>,
+    /// Start Chromium without its security sandbox (needed as root). Pages then run with your full rights: use only on trusted sites
+    #[arg(long)]
+    allow_no_sandbox: bool,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -56,6 +59,7 @@ enum Confirm {
 }
 
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)] // independent command-line switches
 pub(crate) struct DistillArgs {
     /// A URL, or the path of an HTML file
     target: String,
@@ -65,6 +69,9 @@ pub(crate) struct DistillArgs {
     /// Show the browser window
     #[arg(long)]
     headed: bool,
+    /// Start Chromium without its security sandbox (needed as root). Pages then run with your full rights: use only on trusted sites
+    #[arg(long)]
+    allow_no_sandbox: bool,
     /// Print JSON instead of text
     #[arg(long)]
     json: bool,
@@ -95,9 +102,8 @@ fn default_audit_path() -> PathBuf {
 
 pub(crate) async fn run(a: RunArgs) -> Result<ExitCode> {
     let resolved = resolve(a.model.as_deref(), a.base_url.as_deref(), &|k| std::env::var(k).ok())?;
-    let browser = Browser::launch(LaunchOptions { headless: a.headless, ..LaunchOptions::default() })
-        .await
-        .context("could not start a browser")?;
+    let browser =
+        Browser::launch(launch_options(a.headless, a.allow_no_sandbox)).await.context("could not start a browser")?;
     let page = browser.new_page().await?;
     let guard = Guard::new(
         GuardConfig {
@@ -163,9 +169,8 @@ fn target_url(target: &str) -> Result<String> {
 
 pub(crate) async fn distill_cmd(a: DistillArgs) -> Result<ExitCode> {
     let url = target_url(&a.target)?;
-    let browser = Browser::launch(LaunchOptions { headless: !a.headed, ..LaunchOptions::default() })
-        .await
-        .context("could not start a browser")?;
+    let browser =
+        Browser::launch(launch_options(!a.headed, a.allow_no_sandbox)).await.context("could not start a browser")?;
     let page = browser.new_page().await?;
     page.navigate(&url).await?;
     let obs = page.observe_raw().await?;
@@ -216,6 +221,12 @@ pub(crate) async fn distill_cmd(a: DistillArgs) -> Result<ExitCode> {
     }
     browser.close().await;
     Ok(ExitCode::SUCCESS)
+}
+
+/// Browser settings: the sandbox stays on unless asked off, by the flag or by `INTELLI_NO_SANDBOX=1`.
+fn launch_options(headless: bool, allow_no_sandbox: bool) -> LaunchOptions {
+    let defaults = LaunchOptions::default();
+    LaunchOptions { headless, allow_no_sandbox: allow_no_sandbox || defaults.allow_no_sandbox, ..defaults }
 }
 
 #[cfg(test)]

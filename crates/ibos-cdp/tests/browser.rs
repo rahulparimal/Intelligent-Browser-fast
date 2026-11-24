@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use ibos_cdp::{Browser, CdpError, LaunchOptions, Page, find_browser};
+use ibos_cdp::{Browser, CdpError, LaunchOptions, Page, Transport, find_browser};
 use serde_json::json;
 
 const PAGE: &str = r#"<!doctype html><html><head><title>Login</title></head><body>
@@ -184,4 +184,79 @@ async fn graceful_close_also_leaves_nothing() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("orphaned browser processes after close: {:?}", processes_mentioning(&needle));
+}
+
+/// TCP ports in LISTEN state that are owned by any process in the browser's process group (Linux).
+#[cfg(target_os = "linux")]
+fn listening_ports_of_group(pgid: u32) -> Vec<u16> {
+    let mut inodes = std::collections::HashSet::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { continue };
+        let after = stat.rsplit_once(')').map_or("", |x| x.1);
+        let group: Option<u32> = after.split_whitespace().nth(2).and_then(|g| g.parse().ok());
+        if group != Some(pgid) {
+            continue;
+        }
+        for fd in std::fs::read_dir(format!("/proc/{pid}/fd")).into_iter().flatten().flatten() {
+            if let Ok(target) = std::fs::read_link(fd.path())
+                && let Some(inode) =
+                    target.to_str().and_then(|t| t.strip_prefix("socket:[")).and_then(|t| t.strip_suffix(']'))
+            {
+                inodes.insert(inode.to_owned());
+            }
+        }
+    }
+    let mut ports = Vec::new();
+    for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        for line in std::fs::read_to_string(table).unwrap_or_default().lines().skip(1) {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() > 9
+                && cols[3] == "0A"
+                && inodes.contains(cols[9])
+                && let Some(port) = cols[1].rsplit(':').next().and_then(|p| u16::from_str_radix(p, 16).ok())
+            {
+                ports.push(port);
+            }
+        }
+    }
+    ports
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn the_pipe_transport_opens_no_network_port_and_the_port_transport_does() {
+    if !browser_available() {
+        return;
+    }
+    let piped = Browser::launch(LaunchOptions::default()).await.unwrap();
+    assert!(piped.new_page().await.is_ok(), "the pipe works");
+    assert_eq!(listening_ports_of_group(piped.pid()), Vec::<u16>::new(), "no DevTools port with the pipe transport");
+    let ported =
+        Browser::launch(LaunchOptions { transport: Transport::Port, ..LaunchOptions::default() }).await.unwrap();
+    assert!(
+        !listening_ports_of_group(ported.pid()).is_empty(),
+        "the check can see a listener when there is one (so the empty result above means something)"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn running_as_root_needs_an_explicit_opt_in_to_disable_the_sandbox() {
+    if !browser_available() {
+        return;
+    }
+    let is_root = std::fs::read_to_string("/proc/self/status")
+        .is_ok_and(|s| s.lines().any(|l| l.starts_with("Uid:") && l.split_whitespace().nth(1) == Some("0")));
+    if !is_root {
+        eprintln!("skipping: not running as root");
+        return;
+    }
+    let refused =
+        Browser::launch(LaunchOptions { allow_no_sandbox: false, ..LaunchOptions::default() }).await.unwrap_err();
+    assert!(
+        matches!(&refused, CdpError::Launch(m) if m.contains("sandbox") && m.contains("--allow-no-sandbox")),
+        "{refused}"
+    );
+    assert!(Browser::launch(LaunchOptions { allow_no_sandbox: true, ..LaunchOptions::default() }).await.is_ok());
 }
